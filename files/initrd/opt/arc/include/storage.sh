@@ -25,7 +25,7 @@ function getmap() {
         ATAPORT="$(echo ${LINE} | grep -o 'ata[0-9]*')"
         PORT=$(echo ${ATAPORT} | sed 's/ata//')
         HOSTPORTS[${PORT}]=$(echo ${LINE} | grep -o 'host[0-9]*$')
-      done <<<$(ls -l /sys/class/scsi_host | grep -F "${PCI}")
+      done < <(ls -l /sys/class/scsi_host | grep -F "${PCI}")
       while read -r PORT; do
         ls -l /sys/block | grep -F -q "${PCI}/ata${PORT}" && ATTACH=1 || ATTACH=0
         PCMD=$(cat /sys/class/scsi_host/${HOSTPORTS[${PORT}]}/ahci_port_cmd)
@@ -33,7 +33,7 @@ function getmap() {
         [ ${ATTACH} = 1 ] && CONPORTS="$((${CONPORTS} + 1))" && echo "$((${PORT} - 1))" >>"${TMP_PATH}/ports"
         [ ${DUMMY} = 1 ] # Do nothing for now
         NUMPORTS=$((${NUMPORTS} + 1))
-      done <<<$(echo ${!HOSTPORTS[@]} | tr ' ' '\n' | sort -n)
+      done < <(echo ${!HOSTPORTS[@]} | tr ' ' '\n' | sort -n)
       [ ${NUMPORTS} -gt 8 ] && NUMPORTS=8
       [ ${CONPORTS} -gt 8 ] && CONPORTS=8
       echo -n "${NUMPORTS}" >>"${TMP_PATH}/drivesmax"
@@ -131,7 +131,7 @@ function getmap() {
       elif [ ${D} = ${LASTDRIVE} ]; then
         LASTDRIVE=$((${D} + 1))
       fi
-    done <<<$(cat "${TMP_PATH}/ports")
+    done < <(cat "${TMP_PATH}/ports")
   fi
 }
 
@@ -216,23 +216,23 @@ function getmapSelection() {
 }
 
 # Check for Controller // 104=RAID // 106=SATA // 107=SAS // 100=SCSI // c03=USB
-if [ $(lspci -d ::106 | wc -l) -gt 0 ]; then
-  SATACONTROLLER=$(lspci -d ::106 | wc -l)
-  writeConfigKey "device.satacontroller" "${SATACONTROLLER}" "${USER_CONFIG_FILE}"
+SATACONTROLLER=$(lspci -d ::106 | wc -l)
+writeConfigKey "device.satacontroller" "${SATACONTROLLER}" "${USER_CONFIG_FILE}"
+if [ ${SATACONTROLLER} -gt 0 ]; then
   writeConfigKey "device.externalcontroller" "false" "${USER_CONFIG_FILE}"
 fi
-if [ $(lspci -d ::107 | wc -l) -gt 0 ]; then
-  SASCONTROLLER=$(lspci -d ::107 | wc -l)
-  writeConfigKey "device.sascontroller" "${SASCONTROLLER}" "${USER_CONFIG_FILE}"
+SASCONTROLLER=$(lspci -d ::107 | wc -l)
+writeConfigKey "device.sascontroller" "${SASCONTROLLER}" "${USER_CONFIG_FILE}"
+if [ ${SASCONTROLLER} -gt 0 ]; then
   writeConfigKey "device.externalcontroller" "true" "${USER_CONFIG_FILE}"
 fi
-if [ $(lspci -d ::100 | wc -l) -gt 0 ]; then
-  SCSICONTROLLER=$(lspci -d ::100 | wc -l)
-  writeConfigKey "device.scsicontroller" "${SCSICONTROLLER}" "${USER_CONFIG_FILE}"
+SCSICONTROLLER=$(lspci -d ::100 | wc -l)
+writeConfigKey "device.scsicontroller" "${SCSICONTROLLER}" "${USER_CONFIG_FILE}"
+if [ ${SCSICONTROLLER} -gt 0 ]; then
   writeConfigKey "device.externalcontroller" "true" "${USER_CONFIG_FILE}"
 fi
-if [ $(lspci -d ::104 | wc -l) -gt 0 ]; then
-  RAIDCONTROLLER=$(lspci -d ::104 | wc -l)
-  writeConfigKey "device.raidcontroller" "${RAIDCONTROLLER}" "${USER_CONFIG_FILE}"
+RAIDCONTROLLER=$(lspci -d ::104 | wc -l)
+writeConfigKey "device.raidcontroller" "${RAIDCONTROLLER}" "${USER_CONFIG_FILE}"
+if [ ${RAIDCONTROLLER} -gt 0 ]; then
   writeConfigKey "device.externalcontroller" "true" "${USER_CONFIG_FILE}"
 fi

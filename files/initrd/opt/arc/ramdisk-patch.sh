@@ -14,13 +14,11 @@ if [ ! -f "${ORI_RDGZ_FILE}" ]; then
   exit 1
 fi
 
-echo -e "Patching Ramdisk"
-
 # Remove old rd.gz patched
 rm -f "${MOD_RDGZ_FILE}"
 
 # Unzipping ramdisk
-rm -rf "${RAMDISK_PATH}" # Force clean
+rm -rf "${RAMDISK_PATH}"
 mkdir -p "${RAMDISK_PATH}"
 (
   cd "${RAMDISK_PATH}"
@@ -54,7 +52,7 @@ if [ "${PRODUCTVERDSM}" != "${PRODUCTVER}" ]; then
   # Update new buildnumber
   echo -e "Ramdisk Version ${PRODUCTVER} does not match DSM Version ${PRODUCTVERDSM}!"
   echo -e "Try to use DSM Version ${PRODUCTVERDSM} for Patch."
-  writeConfigKey "productver" "${USER_CONFIG_FILE}"
+  writeConfigKey "productver" "${PRODUCTVERDSM}" "${USER_CONFIG_FILE}"
   PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
   PAT_URL=""
   PAT_HASH=""
@@ -71,7 +69,7 @@ else
 fi
 
 # Sanity check
-if [[ -z "${PLATFORM}" || -z "${KVER}" ]]; then
+if [ -z "${PLATFORM}" ] || [ -z "${KVER}" ]; then
   echo "ERROR: Configuration for model ${MODEL} and productversion ${PRODUCTVER} not found." >"${LOG_FILE}"
   exit 1
 fi
@@ -83,24 +81,24 @@ declare -A MODULES
 # Read synoinfo and addons from config
 while IFS=': ' read -r KEY VALUE; do
   [ -n "${KEY}" ] && SYNOINFO["${KEY}"]="${VALUE}"
-done <<<$(readConfigMap "synoinfo" "${USER_CONFIG_FILE}")
+done < <(readConfigMap "synoinfo" "${USER_CONFIG_FILE}")
 while IFS=': ' read -r KEY VALUE; do
   [ -n "${KEY}" ] && ADDONS["${KEY}"]="${VALUE}"
-done <<<$(readConfigMap "addons" "${USER_CONFIG_FILE}")
+done < <(readConfigMap "addons" "${USER_CONFIG_FILE}")
 
 # Read modules from user config
 while IFS=': ' read -r KEY VALUE; do
   [ -n "${KEY}" ] && MODULES["${KEY}"]="${VALUE}"
-done <<<$(readConfigMap "modules" "${USER_CONFIG_FILE}")
+done < <(readConfigMap "modules" "${USER_CONFIG_FILE}")
 
 # Patches (diff -Naru OLDFILE NEWFILE > xxx.patch)
-PATCHS=()
-PATCHS+=("ramdisk-etc-rc-*.patch")
-PATCHS+=("ramdisk-init-script-*.patch")
-PATCHS+=("ramdisk-post-init-script-*.patch")
-PATCHS+=("ramdisk-disable-root-pwd-*.patch")
-PATCHS+=("ramdisk-disable-disabled-ports-*.patch")
-for PE in ${PATCHS[@]}; do
+PATCHES=()
+PATCHES+=("ramdisk-etc-rc-*.patch")
+PATCHES+=("ramdisk-init-script-*.patch")
+PATCHES+=("ramdisk-post-init-script-*.patch")
+PATCHES+=("ramdisk-disable-root-pwd-*.patch")
+PATCHES+=("ramdisk-disable-disabled-ports-*.patch")
+for PE in ${PATCHES[@]}; do
   RET=1
   echo "Patching with ${PE}" >"${LOG_FILE}"
   for PF in $(ls ${PATCH_PATH}/${PE} 2>/dev/null); do
@@ -163,8 +161,8 @@ echo "export LAYOUT=\"${LAYOUT}\"" >>"${RAMDISK_PATH}/addons/addons.sh"
 echo "export KEYMAP=\"${KEYMAP}\"" >>"${RAMDISK_PATH}/addons/addons.sh"
 chmod +x "${RAMDISK_PATH}/addons/addons.sh"
 
-# This order cannot be changed.
-for ADDON in "redpill" "revert" "misc" "eudev" "disks" "localrss" "notify" "wol" "updatenotify" "wol" "acpid"; do
+# System Addons
+for ADDON in "redpill" "revert" "misc" "eudev" "disks" "localrss" "notify" "updatenotify" "wol"; do
   PARAMS=""
   if [ "${ADDON}" = "disks" ]; then
     PARAMS=${HDDSORT}
@@ -174,11 +172,33 @@ for ADDON in "redpill" "revert" "misc" "eudev" "disks" "localrss" "notify" "wol"
   echo "/addons/${ADDON}.sh \${1} ${PARAMS}" >>"${RAMDISK_PATH}/addons/addons.sh" 2>>"${LOG_FILE}" || exit 1
 done
 
-# User addons
+# User Addons
 for ADDON in ${!ADDONS[@]}; do
-  PARAMS=${ADDONS[${ADDON}]}
-  installAddon "${ADDON}" "${PLATFORM}" || exit 1
-  echo "/addons/${ADDON}.sh \${1} ${PARAMS}" >>"${RAMDISK_PATH}/addons/addons.sh" 2>>"${LOG_FILE}" || exit 1
+  if [[ "${ADDON}" == *"hdddb"* ]]; then
+    PARAMS=${ADDONS[${ADDON}]}
+    installAddon "${ADDON}" "${PLATFORM}" || exit 1
+    echo "/addons/${ADDON}.sh \${1} ${PARAMS}" >>"${RAMDISK_PATH}/addons/addons.sh" 2>>"${LOG_FILE}" || exit 1
+  elif [[ "${ADDON}" == *"deduplication"* ]]; then
+    PARAMS=${ADDONS[${ADDON}]}
+    installAddon "${ADDON}" "${PLATFORM}" || exit 1
+    echo "/addons/${ADDON}.sh \${1} ${PARAMS}" >>"${RAMDISK_PATH}/addons/addons.sh" 2>>"${LOG_FILE}" || exit 1
+  elif [[ "${ADDON}" == *"cpuinfo"* ]]; then
+    PARAMS=${ADDONS[${ADDON}]}
+    installAddon "${ADDON}" "${PLATFORM}" || exit 1
+    echo "/addons/${ADDON}.sh \${1} ${PARAMS}" >>"${RAMDISK_PATH}/addons/addons.sh" 2>>"${LOG_FILE}" || exit 1
+  elif [[ "${ADDON}" == *"acpid"* ]]; then
+    PARAMS=${ADDONS[${ADDON}]}
+    installAddon "${ADDON}" "${PLATFORM}" || exit 1
+    echo "/addons/${ADDON}.sh \${1} ${PARAMS}" >>"${RAMDISK_PATH}/addons/addons.sh" 2>>"${LOG_FILE}" || exit 1
+  elif [[ "${ADDON}" == *"cpufreqscaling"* ]]; then
+    PARAMS=${ADDONS[${ADDON}]}
+    installAddon "${ADDON}" "${PLATFORM}" || exit 1
+    echo "/addons/${ADDON}.sh \${1} ${PARAMS}" >>"${RAMDISK_PATH}/addons/addons.sh" 2>>"${LOG_FILE}" || exit 1
+  else
+    PARAMS=${ADDONS[${ADDON}]}
+    installAddon "${ADDON}" "${PLATFORM}" || exit 1
+    echo "/addons/${ADDON}.sh \${1} ${PARAMS}" >>"${RAMDISK_PATH}/addons/addons.sh" 2>>"${LOG_FILE}" || exit 1
+  fi
 done
 
 # Enable Telnet
@@ -198,10 +218,10 @@ else
   cp -f "${ARC_PATH}/include/modulelist" "${RAMDISK_PATH}/addons/modulelist"
 fi
 
-# Backup current loader configs
+# backup current loader configs
 BACKUP_PATH="${RAMDISK_PATH}/usr/arc/backup"
 rm -rf "${BACKUP_PATH}"
-for F in "${USER_GRUB_CONFIG}" "${USER_CONFIG_FILE}" "${USER_UP_PATH}" "${SCRIPTS_PATH}"; do
+for F in "${USER_GRUB_CONFIG}" "${USER_CONFIG_FILE}" "${USER_UP_PATH}"; do
   if [ -f "${F}" ]; then
     FD="$(dirname "${F}")"
     mkdir -p "${FD/\/mnt/${BACKUP_PATH}}"
@@ -231,22 +251,16 @@ done
 
 # SA6400 patches
 if [ "${PLATFORM}" = "epyc7002" ]; then
-  echo -e "Apply Epyc7002 Fixes"
+  echo -n " - Apply Epyc7002 Fixes"
   sed -i 's#/dev/console#/var/log/lrc#g' ${RAMDISK_PATH}/usr/bin/busybox
   sed -i '/^echo "START/a \\nmknod -m 0666 /dev/console c 1 3' ${RAMDISK_PATH}/linuxrc.syno
 fi
 
 # Broadwellntbap patches
 if [ "${PLATFORM}" = "broadwellntbap" ]; then
-  echo -e "Apply Broadwellntbap Fixes"
+  echo -n " - Apply Broadwellntbap Fixes"
   sed -i 's/IsUCOrXA="yes"/XIsUCOrXA="yes"/g; s/IsUCOrXA=yes/XIsUCOrXA=yes/g' ${RAMDISK_PATH}/usr/syno/share/environments.sh
 fi
-
-# Call user patch scripts
-for F in $(ls -1 ${SCRIPTS_PATH}/*.sh 2>/dev/null); do
-  echo "Calling ${F}" >"${LOG_FILE}"
-  . "${F}" >>"${LOG_FILE}" 2>&1 || exit 1
-done
 
 # Reassembly ramdisk
 if [ "${RD_COMPRESSED}" == "true" ]; then
@@ -256,6 +270,3 @@ else
 fi
 
 sync
-
-# Clean
-rm -rf "${RAMDISK_PATH}"

@@ -51,12 +51,7 @@ initConfigKey "arc.key" "" "${USER_CONFIG_FILE}"
 initConfigKey "arc.macsys" "hardware" "${USER_CONFIG_FILE}"
 initConfigKey "arc.odp" "false" "${USER_CONFIG_FILE}"
 initConfigKey "arc.offline" "false" "${USER_CONFIG_FILE}"
-ARCCONF="$(readConfigKey "${MODEL}.serial" "${S_FILE}" 2>/dev/null)"
-if [ -n "${ARCCONF}" ]; then
-  writeConfigKey "arc.patch" "true" "${USER_CONFIG_FILE}"
-else
-  writeConfigKey "arc.patch" "false" "${USER_CONFIG_FILE}"
-fi
+initConfigKey "arc.patch" "false" "${USER_CONFIG_FILE}"
 initConfigKey "arc.pathash" "" "${USER_CONFIG_FILE}"
 initConfigKey "arc.paturl" "" "${USER_CONFIG_FILE}"
 initConfigKey "arc.sn" "" "${USER_CONFIG_FILE}"
@@ -170,6 +165,7 @@ echo -e "\033[1;34mDetected ${NIC} NIC.\033[0m \033[1;37mWaiting for Connection:
 for ETH in ${ETHX}; do
   IP=""
   STATICIP="$(readConfigKey "static.${ETH}" "${USER_CONFIG_FILE}")"
+  ARCNIC="$(readConfigKey "arc.nic" "${USER_CONFIG_FILE}")"
   DRIVER="$(ls -ld /sys/class/net/${ETH}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')"
   COUNT=0
   while true; do
@@ -197,6 +193,7 @@ for ETH in ${ETHX}; do
         echo -e "\r\033[1;37m${DRIVER} (${SPEED} | ${MSG}):\033[0m LINK LOCAL (No DHCP server detected.)"
       else
         echo -e "\r\033[1;37m${DRIVER} (${SPEED} | ${MSG}):\033[0m Access \033[1;34mhttp://${IP}:7681\033[0m to connect to Arc via web."
+        [ -z "${ARCNIC}" ] && writeConfigKey "arc.nic" "${ETH}" "${USER_CONFIG_FILE}"
       fi
       ethtool -s ${ETH} wol g 2>/dev/null
       break
@@ -224,12 +221,7 @@ echo -e "User config is on \033[1;34m${USER_CONFIG_FILE}\033[0m"
 echo -e "Default SSH Root password is \033[1;34marc\033[0m"
 echo
 
-mkdir -p "${ADDONS_PATH}"
-mkdir -p "${LKM_PATH}"
-mkdir -p "${MODULES_PATH}"
-mkdir -p "${MODEL_CONFIG_PATH}"
-mkdir -p "${PATCH_PATH}"
-mkdir -p "${BACKUPDIR}"
+mkdir -p "${USER_UP_PATH}"
 
 # Load Arc Overlay
 echo -e "\033[1;34mLoading Arc Overlay...\033[0m"

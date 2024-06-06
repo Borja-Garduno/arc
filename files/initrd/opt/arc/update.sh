@@ -5,6 +5,7 @@
 [[ -z "${ARC_PATH}" || ! -d "${ARC_PATH}/include" ]] && ARC_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 . ${ARC_PATH}/include/functions.sh
+. ${ARC_PATH}/include/addons.sh
 . ${ARC_PATH}/include/modules.sh
 . ${ARC_PATH}/include/network.sh
 . ${ARC_PATH}/include/update.sh
@@ -74,7 +75,7 @@ function arcUpdate() {
   updatePatches
   # Ask for Boot
   dialog --backtitle "$(backtitle)" --title "Update Loader" --aspect 18 \
-    --infobox "Update successfull!" 0 0
+    --infobox "Update successful!" 0 0
   writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
   BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
   if [ "${CUSTOM}" = "true" ] && [ ! -f "${PART3_PATH}/automated" ]; then
@@ -89,12 +90,14 @@ function boot() {
   if [ "${CUSTOM}" = "true" ]; then
     dialog --backtitle "$(backtitle)" --title "Arc Boot" \
       --infobox "Rebooting to automated Build Mode...\nPlease stay patient!" 4 30
+    sleep 3
+    rebootTo automated
   else
     dialog --backtitle "$(backtitle)" --title "Arc Boot" \
       --infobox "Rebooting to Config Mode...\nPlease stay patient!" 4 30
+    sleep 3
+    rebootTo config
   fi
-  sleep 2
-  exec reboot
 }
 
 ###############################################################################

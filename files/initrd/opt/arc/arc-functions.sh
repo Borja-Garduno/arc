@@ -44,7 +44,7 @@ function addonSelection() {
   declare -A ADDONS
   while IFS=': ' read -r KEY VALUE; do
     [ -n "${KEY}" ] && ADDONS["${KEY}"]="${VALUE}"
-  done <<<$(readConfigMap "addons" "${USER_CONFIG_FILE}")
+  done < <(readConfigMap "addons" "${USER_CONFIG_FILE}")
   rm -f "${TMP_PATH}/opts" >/dev/null
   touch "${TMP_PATH}/opts"
   while read -r ADDON DESC; do
@@ -53,7 +53,7 @@ function addonSelection() {
       [ ! -d "/sys/devices/system/cpu/cpu0/cpufreq" ] && continue
     fi
     echo -e "${ADDON} \"${DESC}\" ${ACT}" >>"${TMP_PATH}/opts"
-  done <<<$(availableAddons "${PLATFORM}")
+  done < <(availableAddons "${PLATFORM}")
   dialog --backtitle "$(backtitle)" --title "DSM Addons" --aspect 18 \
     --checklist "Select DSM Addons to include.\nPlease read Wiki before choosing anything.\nSelect with SPACE, Confirm with ENTER!" 0 0 0 \
     --file "${TMP_PATH}/opts" 2>"${TMP_PATH}/resp"
@@ -89,7 +89,7 @@ function modulesMenu() {
   declare -A USERMODULES
   while IFS=': ' read -r KEY VALUE; do
     [ -n "${KEY}" ] && USERMODULES["${KEY}"]="${VALUE}"
-  done <<<$(readConfigMap "modules" "${USER_CONFIG_FILE}")
+  done < <(readConfigMap "modules" "${USER_CONFIG_FILE}")
   # menu loop
   while true; do
     dialog --backtitle "$(backtitle)" --cancel-label "Exit" --menu "Choose an Option" 0 0 0 \
@@ -138,7 +138,7 @@ function modulesMenu() {
         while read -r ID DESC; do
           USERMODULES["${ID}"]=""
           writeConfigKey "modules.\"${ID}\"" "" "${USER_CONFIG_FILE}"
-        done <<<$(getAllModules "${PLATFORM}" "${KVERP}")
+        done < <(getAllModules "${PLATFORM}" "${KVERP}")
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
@@ -156,7 +156,7 @@ function modulesMenu() {
         while read -r ID DESC; do
           arrayExistItem "${ID}" "${!USERMODULES[@]}" && ACT="on" || ACT="off"
           echo "${ID} ${DESC} ${ACT}" >>"${TMP_PATH}/opts"
-        done <<<$(getAllModules "${PLATFORM}" "${KVERP}")
+        done < <(getAllModules "${PLATFORM}" "${KVERP}")
         dialog --backtitle "$(backtitle)" --title "Modules" --aspect 18 \
           --checklist "Select Modules to include" 0 0 0 \
           --file "${TMP_PATH}/opts" 2>"${TMP_PATH}/resp"
@@ -224,7 +224,7 @@ function modulesMenu() {
           [ $? -ne 0 ] && return
           [ ! -d "${USER_UP_PATH}" ] && mkdir -p "${USER_UP_PATH}"
           mv -f "${TMP_PATH}/modulelist.user" "${USER_UP_PATH}/modulelist"
-          dos2unix "${USER_UP_PATH}/modulelist" 2>/dev/null
+          dos2unix "${USER_UP_PATH}/modulelist"
           break
         done
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
@@ -242,7 +242,7 @@ function cmdlineMenu() {
   declare -A CMDLINE
   while IFS=': ' read -r KEY VALUE; do
     [ -n "${KEY}" ] && CMDLINE["${KEY}"]="${VALUE}"
-  done <<<$(readConfigMap "cmdline" "${USER_CONFIG_FILE}")
+  done < <(readConfigMap "cmdline" "${USER_CONFIG_FILE}")
   echo "1 \"Add a Cmdline item\""                                >"${TMP_PATH}/menu"
   echo "2 \"Delete Cmdline item(s)\""                           >>"${TMP_PATH}/menu"
   echo "3 \"CPU Fix\""                                          >>"${TMP_PATH}/menu"
@@ -443,7 +443,7 @@ function synoinfoMenu() {
   declare -A SYNOINFO
   while IFS=': ' read -r KEY VALUE; do
     [ -n "${KEY}" ] && SYNOINFO["${KEY}"]="${VALUE}"
-  done <<<$(readConfigMap "synoinfo" "${USER_CONFIG_FILE}")
+  done < <(readConfigMap "synoinfo" "${USER_CONFIG_FILE}")
 
   echo "1 \"Add/edit Synoinfo item\""     >"${TMP_PATH}/menu"
   echo "2 \"Delete Synoinfo item(s)\""    >>"${TMP_PATH}/menu"
@@ -554,7 +554,7 @@ function keymapMenu() {
   OPTIONS=""
   while read -r KM; do
     OPTIONS+="${KM::-7} "
-  done <<<$(cd /usr/share/keymaps/i386/${LAYOUT}; ls *.map.gz)
+  done < <(cd /usr/share/keymaps/i386/${LAYOUT}; ls *.map.gz)
   dialog --backtitle "$(backtitle)" --no-items --default-item "${KEYMAP}" \
     --menu "Choice a keymap" 0 0 0 ${OPTIONS} \
     2>"${TMP_PATH}/resp"
@@ -634,6 +634,8 @@ function backupMenu() {
               TEXT+="\nArc Patch: ${ARCPATCH}"
               dialog --backtitle "$(backtitle)" --title "Restore Config" \
                 --aspect 18 --msgbox "${TEXT}" 0 0
+              PLATFORM="$(readConfigKey "platform" "${USER_CONFIG_FILE}")"
+              DT="$(readConfigKey "platforms.${PLATFORM}.dt" "${P_FILE}")"
               CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
               writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
               BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
@@ -753,7 +755,7 @@ function updateMenu() {
         opts=$(cat ${TMP_PATH}/opts)
         [ -z "${opts}" ] && return 1
         if [ ${opts} -eq 1 ]; then
-          TAG="$(curl --insecure -m 5 -s https://api.github.com/repos/AuxXxilium/arc/releases/latest | grep "tag_name" | awk '{print substr($2, 2, length($2)-3)}')"
+          TAG="$(curl --interface ${ARCNIC} -m 5 -skL https://api.github.com/repos/AuxXxilium/arc/releases/latest | grep "tag_name" | awk '{print substr($2, 2, length($2)-3)}')"
           if [ $? -ne 0 ] || [ ${STATUS} -ne 200 ]; then
             dialog --backtitle "$(backtitle)" --title "Upgrade Loader" --aspect 18 \
               --msgbox "Error checking new Version!" 0 0
@@ -775,19 +777,20 @@ function updateMenu() {
         fi
         (
           # Download update file
-          STATUS=$(curl --insecure -w "%{http_code}" -L "https://github.com/AuxXxilium/arc/releases/download/${TAG}/arc-${TAG}.img.zip" -o "${TMP_PATH}/arc-${TAG}.img.zip")
-          if [ $? -ne 0 ] || [ ${STATUS} -ne 200 ]; then
+          curl --interface ${ARCNIC} -#kL "https://github.com/AuxXxilium/arc/releases/download/${TAG}/arc-${TAG}.img.zip" -o "${TMP_PATH}/arc-${TAG}.img.zip" 2>&1 | while IFS= read -r -n1 char; do
+            [[ $char =~ [0-9] ]] && keep=1 ;
+            [[ $char == % ]] && echo "Download:$progress" && progress="" && keep=0 ;
+            [[ $keep == 1 ]] && progress="$progress$char" ;
+          done
+          if [ -f "${TMP_PATH}/arc-${TAG}.img.zip" ]; then
+            echo "Downloading Updatefile successful!"
+          else
             echo "Error downloading Updatefile!"
             sleep 5
             return 1
           fi
           unzip -oq "${TMP_PATH}/arc-${TAG}.img.zip" -d "${TMP_PATH}"
           rm -f "${TMP_PATH}/arc-${TAG}.img.zip" >/dev/null
-          if [ $? -ne 0 ]; then
-            echo "Error extracting Updatefile!"
-            sleep 5
-            return 1
-          fi
           echo "Installing new Loader Image..."
           # Process complete update
           umount "${PART1_PATH}" "${PART2_PATH}" "${PART3_PATH}"
@@ -954,6 +957,7 @@ function sysinfo() {
   # Check if machine has EFI
   [ -d /sys/firmware/efi ] && BOOTSYS="UEFI" || BOOTSYS="BIOS"
   # Get System Informations
+  DATE="$(date)"
   CPU="$(echo $(cat /proc/cpuinfo 2>/dev/null | grep 'model name' | uniq | awk -F':' '{print $2}'))"
   VENDOR="$(dmesg 2>/dev/null | grep -i "DMI:" | sed 's/\[.*\] DMI: //i')"
   ETHX=$(ls /sys/class/net/ 2>/dev/null | grep eth) || true
@@ -1002,6 +1006,7 @@ function sysinfo() {
   TEXT+="\n  Vendor: \Zb${VENDOR}\Zn"
   TEXT+="\n  CPU: \Zb${CPU}\Zn"
   TEXT+="\n  Memory: \Zb$((${RAMTOTAL} / 1024))GB\Zn"
+  TEXT+="\n  Date: \Zb${DATE}\Zn"
   TEXT+="\n"
   TEXT+="\n\Z4> Network: ${NIC} NIC\Zn"
   for ETH in ${ETHX}; do
@@ -1188,6 +1193,7 @@ function fullsysinfo() {
   # Check if machine has EFI
   [ -d /sys/firmware/efi ] && BOOTSYS="UEFI" || BOOTSYS="BIOS"
   # Get System Informations
+  DATE="$(date)"
   CPU="$(echo $(cat /proc/cpuinfo 2>/dev/null | grep 'model name' | uniq | awk -F':' '{print $2}'))"
   VENDOR="$(dmesg 2>/dev/null | grep -i "DMI:" | sed 's/\[.*\] DMI: //i')"
   ETHX=$(ls /sys/class/net/ 2>/dev/null | grep eth) || true
@@ -1236,6 +1242,7 @@ function fullsysinfo() {
   TEXT+="\nVendor: ${VENDOR}"
   TEXT+="\nCPU: ${CPU}"
   TEXT+="\nMemory: $((${RAMTOTAL} / 1024))GB"
+  TEXT+="\nDate: ${DATE}"
   TEXT+="\n"
   TEXT+="\nNetwork: ${NIC} NIC"
   for ETH in ${ETHX}; do
@@ -1574,10 +1581,10 @@ function staticIPMenu() {
       writeConfigKey "nameserver.${ETH}" "${NAMESERVER}" "${USER_CONFIG_FILE}"
       writeConfigKey "static.${ETH}" "true" "${USER_CONFIG_FILE}"
       #NETMASK=$(convert_netmask "${NETMASK}")
-      ip addr add ${IP}/${NETMASK} dev ${ETH} 2>/dev/null || true
-      ip route add default via ${GATEWAY} dev ${ETH} 2>/dev/null || true
-      echo "nameserver ${NAMESERVER}" >>/etc/resolv.conf.head 2>/dev/null || true
-      /etc/init.d/S40network restart 2>/dev/null || true
+      ip addr add ${IP}/${NETMASK} dev ${ETH}
+      ip route add default via ${GATEWAY} dev ${ETH}
+      echo "nameserver ${NAMESERVER}" >>/etc/resolv.conf.head
+      /etc/init.d/S40network restart
     fi
   done
   dialog --backtitle "$(backtitle)" --title "DHCP/StaticIP" \
@@ -1641,7 +1648,7 @@ function resetPassword() {
         grep -q "status=on" "${TMP_PATH}/mdX/usr/syno/etc/packages/SecureSignIn/preference/${U}/method.config" 2>/dev/null
         [ $? -eq 0 ] && S="SecureSignIn" || S="            "
         printf "\"%-36s %-10s %-14s\"\n" "${U}" "${E}" "${S}" >>"${TMP_PATH}/menu"
-      done <<<$(cat "${TMP_PATH}/mdX/etc/shadow" 2>/dev/null)
+      done < <(cat "${TMP_PATH}/mdX/etc/shadow" 2>/dev/null)
     fi
     umount "${TMP_PATH}/mdX"
     [ -f "${TMP_PATH}/menu" ] && break
@@ -1774,13 +1781,14 @@ function saveMenu() {
 # let user format disks from inside arc
 function formatdisks() {
   rm -f "${TMP_PATH}/opts" >/dev/null
-  while read -r KNAME KMODEL PKNAME TYPE; do
+  while read KNAME SIZE PKNAME; do
     [ -z "${KNAME}" ] && continue
-    [ "${KNAME}" = "${LOADER_DISK}" ] || [ "${PKNAME}" = "${LOADER_DISK}" ] || [ "${KMODEL}" = "${LOADER_DISK}" ] && continue
-    [ "${KNAME}" = /dev/md* ] && continue
-    [ -z "${KMODEL}" ] && KMODEL="${TYPE}"
-    echo "\"${KNAME}\" \"${KMODEL}\" \"off\"" >>"${TMP_PATH}/opts"
-  done <<<$(lsblk -pno KNAME,MODEL,PKNAME,TYPE | sort)
+    [[ "${KNAME}" = /dev/md* ]] && continue
+    [[ "${KNAME}" = "${LOADER_DISK}" || "${PKNAME}" = "${LOADER_DISK}" ]] && continue
+    [ -n "${PKNAME}" ] && PARTITION=" (Partition)" || PARTITION=" (Disk)"
+    [ -z "${SIZE}" ] && SIZE="Unknown"
+    echo "\"${KNAME}\" \"${SIZE}${PARTITION}\" \"off\"" >>"${TMP_PATH}/opts"
+  done < <(lsblk -pno KNAME,SIZE,PKNAME)
   if [ ! -f "${TMP_PATH}/opts" ]; then
     dialog --backtitle "$(backtitle)" --colors --title "Format Disks" \
       --msgbox "No disk found!" 0 0
@@ -1881,7 +1889,7 @@ function cloneLoader() {
     [ -z "${KMODEL}" ] && KMODEL="${TYPE}"
     [ "${KNAME}" = "${LOADER_DISK}" ] || [ "${PKNAME}" = "${LOADER_DISK}" ] || [ "${KMODEL}" = "${LOADER_DISK}" ] && continue
     echo "\"${KNAME}\" \"${KMODEL}\" \"off\"" >>"${TMP_PATH}/opts"
-  done <<<$(lsblk -dpno KNAME,MODEL,PKNAME,TYPE | sort)
+  done < <(lsblk -dpno KNAME,MODEL,PKNAME,TYPE | sort)
   if [ ! -f "${TMP_PATH}/opts" ]; then
     dialog --backtitle "$(backtitle)" --colors --title "Clone Loader" \
       --msgbox "No disk found!" 0 0
@@ -2043,7 +2051,7 @@ function satadomMenu() {
     --default-item "${SATADOM}" --menu  "Choose an Option" 0 0 0 --file "${TMP_PATH}/opts" \
     2>${TMP_PATH}/resp
   [ $? -ne 0 ] && return
-  resp=$(cat ${TMP_PATH}/resp 2>/dev/null)
+  resp=$(cat ${TMP_PATH}/resp)
   [ -z "${resp}" ] && return
   SATADOM=${resp}
   writeConfigKey "satadom" "${SATADOM}" "${USER_CONFIG_FILE}"
@@ -2065,9 +2073,11 @@ function decryptMenu() {
       if $(openssl enc -in "${S_FILE_ENC}" -out "${S_FILE_ARC}" -d -aes-256-cbc -k "${ARC_KEY}" 2>/dev/null); then
         dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
           --msgbox "Decrypt successful: You can use Arc Patch." 5 50
+        mv -f "${S_FILE}" "${S_FILE}.bak"
         mv -f "${S_FILE_ARC}" "${S_FILE}"
         writeConfigKey "arc.key" "${ARC_KEY}" "${USER_CONFIG_FILE}"
       else
+        mv -f "${S_FILE}.bak" "${S_FILE}"
         dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
           --msgbox "Decrypt failed: Wrong Key for this Version." 5 50
         writeConfigKey "arc.key" "" "${USER_CONFIG_FILE}"
@@ -2079,5 +2089,27 @@ function decryptMenu() {
     fi
   fi
   ARC_KEY="$(readConfigKey "arc.key" "${USER_CONFIG_FILE}")"
+  return
+}
+
+###############################################################################
+# ArcNIC Menu
+function arcNIC () {
+  rm -f "${TMP_PATH}/opts" >/dev/null
+  touch "${TMP_PATH}/opts"
+  ETHX="$(ls /sys/class/net/ 2>/dev/null | grep eth)" # real network cards list
+  # Get actual IP
+  for ETH in ${ETHX}; do
+    DRIVER="$(ls -ld /sys/class/net/${ETH}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')"
+    echo -e "${ETH} \"${DRIVER}\"" >>"${TMP_PATH}/opts"
+  done
+  dialog --backtitle "$(backtitle)" --title "Arc NIC" \
+    --default-item "${ARCNIC}" --menu  "Choose a NIC" 0 0 0 --file "${TMP_PATH}/opts" \
+    2>${TMP_PATH}/resp
+  [ $? -ne 0 ] && return
+  resp=$(cat ${TMP_PATH}/resp)
+  [ -z "${resp}" ] && return
+  ARCNIC=${resp}
+  writeConfigKey "arc.nic" "${ARCNIC}" "${USER_CONFIG_FILE}"
   return
 }
