@@ -64,6 +64,8 @@ jobs:
           getPatches "files/p3/patches"
           getTheme "files/p1/boot/grub"
           getOffline "files/p3/configs"
+          br_version="2023.11.x"
+          getBuildroot "${br_version}" "br"
 
           echo "OK"
 
@@ -86,8 +88,6 @@ jobs:
           sudo mount ${LOOPX}p1 "/tmp/p1"
           sudo mount ${LOOPX}p3 "/tmp/p3"
 
-          echo "Get Buildroot"
-          getBuildroot "2023.08.x" "br"
           [ ! -f "br/bzImage-arc" ] || [ ! -f "br/initrd-arc" ] && return 1
           
           echo "Repack initrd"
@@ -107,9 +107,15 @@ jobs:
 
           sudo losetup --detach ${LOOPX}
 
+          #resizeImg "arc.img" "+1024M" "arc-2G.img"
+          #mv -f "arc-2G.img" "arc.img"
+
           echo "Image Converter"
           qemu-img convert -O vmdk arc.img arc-dyn.vmdk
           qemu-img convert -O vmdk -o adapter_type=lsilogic arc.img -o subformat=monolithicFlat arc.vmdk
+
+          echo "Create Arc ova"
+          convertova "arc.img" "arc.ova"
 
       # Zip image and generate checksum
       - name: Pack
@@ -118,6 +124,7 @@ jobs:
             zip -9 "arc-${{ env.VERSION }}.img.zip" arc.img
             zip -9 "arc-${{ env.VERSION }}.vmdk-dyn.zip" arc-dyn.vmdk
             zip -9 "arc-${{ env.VERSION }}.vmdk-flat.zip" arc.vmdk arc-flat.vmdk
+            zip -9 "arc-${{ env.VERSION }}.ova.zip" arc.ova
           else
             zip -9 "arc.img.zip" arc.img
           fi
@@ -142,7 +149,5 @@ jobs:
           prerelease: true
           allowUpdates: true
           artifacts: |
-            arc-${{ env.VERSION }}.img.zip
-            arc-${{ env.VERSION }}.vmdk-dyn.zip
-            arc-${{ env.VERSION }}.vmdk-flat.zip
+            arc-*.zip
             update.zip
