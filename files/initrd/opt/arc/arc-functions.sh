@@ -1,4 +1,3 @@
-
 ###############################################################################
 # Permits user edit the user config
 function editUserConfig() {
@@ -8,14 +7,14 @@ function editUserConfig() {
     [ $? -ne 0 ] && return 1
     mv -f "${TMP_PATH}/userconfig" "${USER_CONFIG_FILE}"
     ERRORS=$(yq eval "${USER_CONFIG_FILE}" 2>&1)
-    [ $? -eq 0 ] && break
+    [ $? -eq 0 ] && break || continue
     dialog --backtitle "$(backtitle)" --title "Invalid YAML format" --msgbox "${ERRORS}" 0 0
   done
   OLDMODEL="${MODEL}"
   OLDPRODUCTVER="${PRODUCTVER}"
   MODEL="$(readConfigKey "model" "${USER_CONFIG_FILE}")"
   PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
-  SN="$(readConfigKey "arc.sn" "${USER_CONFIG_FILE}")"
+  SN="$(readConfigKey "sn" "${USER_CONFIG_FILE}")"
   if [ "${MODEL}" != "${OLDMODEL}" ] || [ "${PRODUCTVER}" != "${OLDPRODUCTVER}" ]; then
     # Delete old files
     rm -f "${ORI_ZIMAGE_FILE}" "${ORI_RDGZ_FILE}" "${MOD_ZIMAGE_FILE}" "${MOD_RDGZ_FILE}" >/dev/null
@@ -39,6 +38,7 @@ function addonSelection() {
   MODEL="$(readConfigKey "model" "${USER_CONFIG_FILE}")"
   PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
   PLATFORM="$(readConfigKey "platform" "${USER_CONFIG_FILE}")"
+  ARCPATCH="$(readConfigKey "arc.patch" "${USER_CONFIG_FILE}")"
   # read addons from user config
   unset ADDONS
   declare -A ADDONS
@@ -49,10 +49,11 @@ function addonSelection() {
   touch "${TMP_PATH}/opts"
   while read -r ADDON DESC; do
     arrayExistItem "${ADDON}" "${!ADDONS[@]}" && ACT="on" || ACT="off"
-    if [ "${ADDON}" == "amepatch" ] && [ "${OFFLINE}" == "true" ]; then
+    if [ "${ADDON}" == "amepatch" ] && [ "${ARCPATCH}" == "false" ]; then
       continue
+    else
+      echo -e "${ADDON} \"${DESC}\" ${ACT}" >>"${TMP_PATH}/opts"
     fi
-    echo -e "${ADDON} \"${DESC}\" ${ACT}" >>"${TMP_PATH}/opts"
   done < <(availableAddons "${PLATFORM}")
   dialog --backtitle "$(backtitle)" --title "DSM Addons" --aspect 18 \
     --checklist "Select DSM Addons to include.\nPlease read Wiki before choosing anything.\nSelect with SPACE, Confirm with ENTER!" 0 0 0 \
@@ -76,20 +77,13 @@ function addonSelection() {
 function modulesMenu() {
   PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
   PLATFORM="$(readConfigKey "platform" "${USER_CONFIG_FILE}")"
-  KVER="$(readConfigKey "platforms.${PLATFORM}.productvers.[${PRODUCTVER}].kver" "${P_FILE}")"
+  KVER="$(readConfigKey "platforms.${PLATFORM}.productvers.\"${PRODUCTVER}\".kver" "${P_FILE}")"
   # Modify KVER for Epyc7002
   if [ "${PLATFORM}" == "epyc7002" ]; then
     KVERP="${PRODUCTVER}-${KVER}"
   else
     KVERP="${KVER}"
   fi
-  dialog --backtitle "$(backtitle)" --title "Modules" --aspect 18 \
-    --infobox "Reading modules" 0 0
-  unset USERMODULES
-  declare -A USERMODULES
-  while IFS=': ' read -r KEY VALUE; do
-    [ -n "${KEY}" ] && USERMODULES["${KEY}"]="${VALUE}"
-  done < <(readConfigMap "modules" "${USER_CONFIG_FILE}")
   # menu loop
   while true; do
     dialog --backtitle "$(backtitle)" --cancel-label "Exit" --menu "Choose an Option" 0 0 0 \
@@ -100,10 +94,19 @@ function modulesMenu() {
       5 "Choose Modules" \
       6 "Add external module" \
       7 "Edit Modules copied to DSM" \
+      8 "Force-copy loaded Modules to DSM" \
+      9 "Blacklist Modules to prevent loading in DSM" \
       2>"${TMP_PATH}/resp"
     [ $? -ne 0 ] && break
     case "$(cat ${TMP_PATH}/resp)" in
       1)
+        dialog --backtitle "$(backtitle)" --title "Modules" --aspect 18 \
+          --infobox "Reading modules" 0 0
+        unset USERMODULES
+        declare -A USERMODULES
+        while IFS=': ' read -r KEY VALUE; do
+          [ -n "${KEY}" ] && USERMODULES["${KEY}"]="${VALUE}"
+        done < <(readConfigMap "modules" "${USER_CONFIG_FILE}")
         ITEMS=""
         for KEY in ${!USERMODULES[@]}; do
           ITEMS+="${KEY}: ${USERMODULES[$KEY]}\n"
@@ -179,7 +182,7 @@ function modulesMenu() {
         MSG+="This function is experimental and dangerous. If you don't know much, please exit.\n"
         MSG+="The imported .ko of this function will be implanted into the corresponding arch's modules package, which will affect all models of the arch.\n"
         MSG+="This program will not determine the availability of imported modules or even make type judgments, as please double check if it is correct.\n"
-        MSG+="If you want to remove it, please go to the \"Update Menu\" -> \"Update Modules\" to forcibly update the modules. All imports will be reset.\n"
+        MSG+="If you want to remove it, please go to the \"Update\" -> \"Update Modules\" to forcibly update the modules. All imports will be reset.\n"
         MSG+="Do you want to continue?"
         dialog --backtitle "$(backtitle)" --title "External Modules" \
           --yesno "${MSG}" 0 0
@@ -193,13 +196,6 @@ function modulesMenu() {
         for F in $(ls "${TMP_UP_PATH}" 2>/dev/null); do
           USER_FILE="${F}"
           if [ -n "${USER_FILE}" ] && [ "${USER_FILE##*.}" == "ko" ]; then
-            KVER="$(readConfigKey "platforms.${PLATFORM}.productvers.[${PRODUCTVER}].kver" "${P_FILE}")"
-            # Modify KVER for Epyc7002
-            if [ "${PLATFORM}" == "epyc7002" ]; then
-              KVERP="${PRODUCTVER}-${KVER}"
-            else
-              KVERP="${KVER}"
-            fi
             addToModules "${PLATFORM}" "${KVERP}" "${TMP_UP_PATH}/${USER_FILE}"
             dialog --backtitle "$(backtitle)" --title "External Modules" \
               --msgbox "Module: ${USER_FILE}\nadded to ${PLATFORM}-${KVERP}" 7 50
@@ -213,7 +209,7 @@ function modulesMenu() {
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       7)
-        if [ -f ${USER_UP_PATH}/modulelist ]; then
+        if [ -f "${USER_UP_PATH}/modulelist" ]; then
           cp -f "${USER_UP_PATH}/modulelist" "${TMP_PATH}/modulelist.tmp"
         else
           cp -f "${ARC_PATH}/include/modulelist" "${TMP_PATH}/modulelist.tmp"
@@ -230,6 +226,54 @@ function modulesMenu() {
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
+      8)
+        if [ -f "${USER_UP_PATH}/modulelist" ]; then
+          cp -f "${USER_UP_PATH}/modulelist" "${TMP_PATH}/modulelist.tmp"
+        else
+          cp -f "${ARC_PATH}/include/modulelist" "${TMP_PATH}/modulelist.tmp"
+        fi
+        echo -e "\n\n# Arc Modules" >>"${TMP_PATH}/modulelist.tmp"
+        KOLIST=""
+        for I in $(lsmod | awk -F' ' '{print $1}' | grep -v 'Module'); do
+          KOLIST+="$(getdepends "${PLATFORM}" "${KVERP}" "${I}") ${I} "
+        done
+        KOLIST=($(echo ${KOLIST} | tr ' ' '\n' | sort -u))
+        while read -r ID DESC; do
+          for MOD in ${KOLIST[@]}; do
+            [ "${MOD}" == "${ID}" ] && echo "F ${ID}.ko" >>"${TMP_PATH}/modulelist.tmp"
+          done
+        done < <(getAllModules "${PLATFORM}" "${KVERP}")
+        [ ! -d "${USER_UP_PATH}" ] && mkdir -p "${USER_UP_PATH}"
+        mv -f "${TMP_PATH}/modulelist.tmp" "${USER_UP_PATH}/modulelist"
+        dos2unix "${USER_UP_PATH}/modulelist"
+        dialog --backtitle "$(backtitle)" --title "Loaded Modules Copy" \
+            --msgbox "All loaded Modules will be copied to DSM!" 5 50
+        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+        ;;
+      9)
+        MSG=""
+        MSG+="The blacklist is used to prevent the kernel from loading specific modules.\n"
+        MSG+="The blacklist is a list of module names separated by ','.\n"
+        MSG+="For example: \Z4evbug,cdc_ether\Zn\n"
+        while true; do
+          modblacklist="$(readConfigKey "modblacklist" "${USER_CONFIG_FILE}")"
+          dialog --backtitle "$(backtitle)" --title "Blacklist Modules" \
+            --inputbox "${MSG}" 12 70 "${modblacklist}" \
+            2>${TMP_PATH}/resp
+          [ $? -ne 0 ] && break
+          VALUE="$(cat "${TMP_PATH}/resp")"
+          if [[ ${VALUE} = *" "* ]]; then
+            dialog --backtitle "$(backtitle)" --title  "Blacklist Module" \
+              --yesno "Invalid list, No spaces should appear, retry?" 0 0
+            [ $? -eq 0 ] && continue || break
+          fi
+          writeConfigKey "modblacklist" "${VALUE}" "${USER_CONFIG_FILE}"
+          break
+        done
+        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+        ;;
     esac
   done
   return
@@ -238,28 +282,22 @@ function modulesMenu() {
 ###############################################################################
 # Let user edit cmdline
 function cmdlineMenu() {
-  unset CMDLINE
-  declare -A CMDLINE
-  while IFS=': ' read -r KEY VALUE; do
-    [ -n "${KEY}" ] && CMDLINE["${KEY}"]="${VALUE}"
-  done < <(readConfigMap "cmdline" "${USER_CONFIG_FILE}")
+  # Loop menu
+  while true; do
   echo "1 \"Add a Cmdline item\""                                >"${TMP_PATH}/menu"
   echo "2 \"Delete Cmdline item(s)\""                           >>"${TMP_PATH}/menu"
   echo "3 \"CPU Fix\""                                          >>"${TMP_PATH}/menu"
   echo "4 \"RAM Fix\""                                          >>"${TMP_PATH}/menu"
   echo "5 \"PCI/IRQ Fix\""                                      >>"${TMP_PATH}/menu"
   echo "6 \"C-State Fix\""                                      >>"${TMP_PATH}/menu"
-  echo "7 \"Show user Cmdline\""                                >>"${TMP_PATH}/menu"
-  echo "9 \"Kernelpanic Behavior\""                             >>"${TMP_PATH}/menu"
-  # Loop menu
-  while true; do
+  echo "7 \"Kernelpanic Behavior\""                             >>"${TMP_PATH}/menu"
     dialog --backtitle "$(backtitle)" --cancel-label "Exit" --menu "Choose an Option" 0 0 0 \
       --file "${TMP_PATH}/menu" 2>"${TMP_PATH}/resp"
-    [ $? -ne 0 ] && return 1
+    [ $? -ne 0 ] && break
     case "$(cat ${TMP_PATH}/resp)" in
       1)
         MSG=""
-        MSG+="Commonly used Parameter:\n"
+        MSG+="Commonly used Parameter (Format: Name=Value):\n"
         MSG+=" * \Z4SpectreAll_on=\Zn\n    Enable Spectre and Meltdown protection to mitigate the threat of speculative execution vulnerability.\n"
         MSG+=" * \Z4disable_mtrr_trim=\Zn\n    Disables kernel trim any uncacheable memory out.\n"
         MSG+=" * \Z4intel_idle.max_cstate=1\Zn\n    Set the maximum C-state depth allowed by the intel_idle driver.\n"
@@ -274,16 +312,20 @@ function cmdlineMenu() {
         MSG+=" * \Z4pci=nommconf\Zn\n    Disable the use of Memory-Mapped Configuration for PCI devices(use this parameter cautiously).\n"
         MSG+="\nEnter the Parameter Name and Value you want to add.\n"
         LINENUM=$(($(echo -e "${MSG}" | wc -l) + 10))
+        RET=0
         while true; do
+          [ ${RET} -eq 255 ] && MSG+="Commonly used Parameter (Format: Name=Value):\n"
           dialog --clear --backtitle "$(backtitle)" \
             --colors --title "User Cmdline" \
-            --form "${MSG}" ${LINENUM:-16} 70 2 "Name:" 1 1 "" 1 10 55 0 "Value:" 2 1 "" 2 10 55 0 \
+            --form "${MSG}" ${LINENUM:-16} 80 2 "Name:" 1 1 "" 1 10 55 0 "Value:" 2 1 "" 2 10 55 0 \
             2>"${TMP_PATH}/resp"
           RET=$?
           case ${RET} in
             0) # ok-button
               NAME="$(cat "${TMP_PATH}/resp" | sed -n '1p')"
               VALUE="$(cat "${TMP_PATH}/resp" | sed -n '2p')"
+              [[ "${NAME}" = *= ]] && NAME="${NAME%?}"
+              [[ "${VALUE}" = =* ]] && VALUE="${VALUE#*=}"
               if [ -z "${NAME//\"/}" ]; then
                 dialog --clear --backtitle "$(backtitle)" --title "User Cmdline" \
                   --yesno "Invalid Parameter Name, retry?" 0 0
@@ -296,7 +338,7 @@ function cmdlineMenu() {
               break
               ;;
             255) # ESC
-              break
+              # break
               ;;
           esac
         done
@@ -304,132 +346,143 @@ function cmdlineMenu() {
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       2)
-        if [ ${#CMDLINE[@]} -eq 0 ]; then
-          dialog --backtitle "$(backtitle)" --msgbox "No user cmdline to remove" 0 0
-          continue
-        fi
-        ITEMS=""
-        for I in "${!CMDLINE[@]}"; do
-          [ -z "${CMDLINE[${I}]}" ] && ITEMS+="${I} \"\" off " || ITEMS+="${I} ${CMDLINE[${I}]} off "
+        while true; do
+          unset CMDLINE
+          declare -A CMDLINE
+          while IFS=': ' read -r KEY VALUE; do
+            [ -n "${KEY}" ] && CMDLINE["${KEY}"]="${VALUE}"
+          done < <(readConfigMap "cmdline" "${USER_CONFIG_FILE}")
+          if [ ${#CMDLINE[@]} -eq 0 ]; then
+            dialog --backtitle "$(backtitle)" --msgbox "No user cmdline to remove" 0 0
+            continue
+          fi
+          ITEMS=""
+          for I in "${!CMDLINE[@]}"; do
+            [ -z "${CMDLINE[${I}]}" ] && ITEMS+="${I} \"\" off " || ITEMS+="${I} ${CMDLINE[${I}]} off "
+          done
+          dialog --backtitle "$(backtitle)" \
+            --checklist "Select cmdline to remove" 0 0 0 ${ITEMS} \
+            2>"${TMP_PATH}/resp"
+          [ $? -ne 0 ] && break
+          resp=$(cat ${TMP_PATH}/resp)
+          [ -z "${resp}" ] && break
+          for I in ${resp}; do
+            unset 'CMDLINE[${I}]'
+            deleteConfigKey "cmdline.\"${I}\"" "${USER_CONFIG_FILE}"
+          done
+          writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+          BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         done
-        dialog --backtitle "$(backtitle)" \
-          --checklist "Select cmdline to remove" 0 0 0 ${ITEMS} \
-          2>"${TMP_PATH}/resp"
-        [ $? -ne 0 ] && return 1
-        resp=$(cat ${TMP_PATH}/resp)
-        [ -z "${resp}" ] && return 1
-        for I in ${resp}; do
-          unset 'CMDLINE[${I}]'
-          deleteConfigKey "cmdline.\"${I}\"" "${USER_CONFIG_FILE}"
-        done
-        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
-        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       3)
-        dialog --clear --backtitle "$(backtitle)" \
-          --title "CPU Fix" --menu "Fix?" 0 0 0 \
-          1 "Install" \
-          2 "Uninstall" \
-        2>"${TMP_PATH}/resp"
-        resp=$(cat ${TMP_PATH}/resp)
-        [ -z "${resp}" ] && return 1
-        if [ ${resp} -eq 1 ]; then
-          writeConfigKey "cmdline.nmi_watchdog" "0" "${USER_CONFIG_FILE}"
-          writeConfigKey "cmdline.tsc" "reliable" "${USER_CONFIG_FILE}"
-          dialog --backtitle "$(backtitle)" --title "CPU Fix" \
-            --aspect 18 --msgbox "Fix added to Cmdline" 0 0
-        elif [ ${resp} -eq 2 ]; then
-          deleteConfigKey "cmdline.nmi_watchdog" "${USER_CONFIG_FILE}"
-          deleteConfigKey "cmdline.tsc" "${USER_CONFIG_FILE}"
-          dialog --backtitle "$(backtitle)" --title "CPU Fix" \
-            --aspect 18 --msgbox "Fix uninstalled from Cmdline" 0 0
-        fi
+        while true; do
+          dialog --clear --backtitle "$(backtitle)" \
+            --title "CPU Fix" --menu "Fix?" 0 0 0 \
+            1 "Install" \
+            2 "Uninstall" \
+          2>"${TMP_PATH}/resp"
+          resp=$(cat ${TMP_PATH}/resp)
+          [ -z "${resp}" ] && break
+          if [ ${resp} -eq 1 ]; then
+            writeConfigKey "cmdline.nmi_watchdog" "0" "${USER_CONFIG_FILE}"
+            writeConfigKey "cmdline.tsc" "reliable" "${USER_CONFIG_FILE}"
+            dialog --backtitle "$(backtitle)" --title "CPU Fix" \
+              --aspect 18 --msgbox "Fix added to Cmdline" 0 0
+          elif [ ${resp} -eq 2 ]; then
+            deleteConfigKey "cmdline.nmi_watchdog" "${USER_CONFIG_FILE}"
+            deleteConfigKey "cmdline.tsc" "${USER_CONFIG_FILE}"
+            dialog --backtitle "$(backtitle)" --title "CPU Fix" \
+              --aspect 18 --msgbox "Fix uninstalled from Cmdline" 0 0
+          fi
+        done
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       4)
-        dialog --clear --backtitle "$(backtitle)" \
-          --title "RAM Fix" --menu "Fix?" 0 0 0 \
-          1 "Install" \
-          2 "Uninstall" \
-        2>"${TMP_PATH}/resp"
-        resp=$(cat ${TMP_PATH}/resp)
-        [ -z "${resp}" ] && return 1
-        if [ ${resp} -eq 1 ]; then
-          writeConfigKey "cmdline.disable_mtrr_trim" "0" "${USER_CONFIG_FILE}"
-          writeConfigKey "cmdline.crashkernel" "auto" "${USER_CONFIG_FILE}"
-          dialog --backtitle "$(backtitle)" --title "RAM Fix" \
-            --aspect 18 --msgbox "Fix added to Cmdline" 0 0
-        elif [ ${resp} -eq 2 ]; then
-          deleteConfigKey "cmdline.disable_mtrr_trim" "${USER_CONFIG_FILE}"
-          deleteConfigKey "cmdline.crashkernel" "${USER_CONFIG_FILE}"
-          dialog --backtitle "$(backtitle)" --title "RAM Fix" \
-            --aspect 18 --msgbox "Fix removed from Cmdline" 0 0
-        fi
+        while true; do
+          dialog --clear --backtitle "$(backtitle)" \
+            --title "RAM Fix" --menu "Fix?" 0 0 0 \
+            1 "Install" \
+            2 "Uninstall" \
+          2>"${TMP_PATH}/resp"
+          resp=$(cat ${TMP_PATH}/resp)
+          [ -z "${resp}" ] && break
+          if [ ${resp} -eq 1 ]; then
+            writeConfigKey "cmdline.disable_mtrr_trim" "0" "${USER_CONFIG_FILE}"
+            writeConfigKey "cmdline.crashkernel" "auto" "${USER_CONFIG_FILE}"
+            dialog --backtitle "$(backtitle)" --title "RAM Fix" \
+              --aspect 18 --msgbox "Fix added to Cmdline" 0 0
+          elif [ ${resp} -eq 2 ]; then
+            deleteConfigKey "cmdline.disable_mtrr_trim" "${USER_CONFIG_FILE}"
+            deleteConfigKey "cmdline.crashkernel" "${USER_CONFIG_FILE}"
+            dialog --backtitle "$(backtitle)" --title "RAM Fix" \
+              --aspect 18 --msgbox "Fix removed from Cmdline" 0 0
+          fi
+        done
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       5)
-        dialog --clear --backtitle "$(backtitle)" \
-          --title "PCI/IRQ Fix" --menu "Fix?" 0 0 0 \
-          1 "Install" \
-          2 "Uninstall" \
-        2>"${TMP_PATH}/resp"
-        resp=$(cat ${TMP_PATH}/resp)
-        [ -z "${resp}" ] && return 1
-        if [ ${resp} -eq 1 ]; then
-          writeConfigKey "cmdline.pci" "routeirq" "${USER_CONFIG_FILE}"
-          dialog --backtitle "$(backtitle)" --title "PCI/IRQ Fix" \
-            --aspect 18 --msgbox "Fix added to Cmdline" 0 0
-        elif [ ${resp} -eq 2 ]; then
-          deleteConfigKey "cmdline.pci" "${USER_CONFIG_FILE}"
-          dialog --backtitle "$(backtitle)" --title "PCI/IRQ Fix" \
-            --aspect 18 --msgbox "Fix uninstalled from Cmdline" 0 0
-        fi
+        while true; do
+          dialog --clear --backtitle "$(backtitle)" \
+            --title "PCI/IRQ Fix" --menu "Fix?" 0 0 0 \
+            1 "Install" \
+            2 "Uninstall" \
+          2>"${TMP_PATH}/resp"
+          resp=$(cat ${TMP_PATH}/resp)
+          [ -z "${resp}" ] && break
+          if [ ${resp} -eq 1 ]; then
+            writeConfigKey "cmdline.pci" "routeirq" "${USER_CONFIG_FILE}"
+            dialog --backtitle "$(backtitle)" --title "PCI/IRQ Fix" \
+              --aspect 18 --msgbox "Fix added to Cmdline" 0 0
+          elif [ ${resp} -eq 2 ]; then
+            deleteConfigKey "cmdline.pci" "${USER_CONFIG_FILE}"
+            dialog --backtitle "$(backtitle)" --title "PCI/IRQ Fix" \
+              --aspect 18 --msgbox "Fix uninstalled from Cmdline" 0 0
+          fi
+        done
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       6)
-        dialog --clear --backtitle "$(backtitle)" \
-          --title "C-State Fix" --menu "Fix?" 0 0 0 \
-          1 "Install" \
-          2 "Uninstall" \
-        2>"${TMP_PATH}/resp"
-        resp=$(cat ${TMP_PATH}/resp)
-        [ -z "${resp}" ] && return 1
-        if [ ${resp} -eq 1 ]; then
-          writeConfigKey "cmdline.intel_idle.max_cstate" "1" "${USER_CONFIG_FILE}"
-          dialog --backtitle "$(backtitle)" --title "C-State Fix" \
-            --aspect 18 --msgbox "Fix added to Cmdline" 0 0
-        elif [ ${resp} -eq 2 ]; then
-          deleteConfigKey "cmdline.intel_idle.max_cstate" "${USER_CONFIG_FILE}"
-          dialog --backtitle "$(backtitle)" --title "C-State Fix" \
-            --aspect 18 --msgbox "Fix uninstalled from Cmdline" 0 0
-        fi
+        while true; do
+          dialog --clear --backtitle "$(backtitle)" \
+            --title "C-State Fix" --menu "Fix?" 0 0 0 \
+            1 "Install" \
+            2 "Uninstall" \
+          2>"${TMP_PATH}/resp"
+          resp=$(cat ${TMP_PATH}/resp)
+          [ -z "${resp}" ] && break
+          if [ ${resp} -eq 1 ]; then
+            writeConfigKey "cmdline.intel_idle.max_cstate" "1" "${USER_CONFIG_FILE}"
+            dialog --backtitle "$(backtitle)" --title "C-State Fix" \
+              --aspect 18 --msgbox "Fix added to Cmdline" 0 0
+          elif [ ${resp} -eq 2 ]; then
+            deleteConfigKey "cmdline.intel_idle.max_cstate" "${USER_CONFIG_FILE}"
+            dialog --backtitle "$(backtitle)" --title "C-State Fix" \
+              --aspect 18 --msgbox "Fix uninstalled from Cmdline" 0 0
+          fi
+        done
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       7)
-        ITEMS=""
-        for KEY in ${!CMDLINE[@]}; do
-          ITEMS+="${KEY}: ${CMDLINE[$KEY]}\n"
+        while true; do
+          rm -f "${TMP_PATH}/opts" >/dev/null
+          echo "5 \"Reboot after 5 seconds\"" >>"${TMP_PATH}/opts"
+          echo "0 \"No reboot\"" >>"${TMP_PATH}/opts"
+          echo "-1 \"Restart immediately\"" >>"${TMP_PATH}/opts"
+          dialog --backtitle "$(backtitle)" --colors --title "Kernelpanic" \
+            --default-item "${KERNELPANIC}" --menu "Choose a time(seconds)" 0 0 0 --file "${TMP_PATH}/opts" \
+            2>${TMP_PATH}/resp
+          [ $? -ne 0 ] && break
+          resp=$(cat ${TMP_PATH}/resp)
+          [ -z "${resp}" ] && break
+          KERNELPANIC=${resp}
+          writeConfigKey "kernelpanic" "${KERNELPANIC}" "${USER_CONFIG_FILE}"
         done
-        dialog --backtitle "$(backtitle)" --title "User cmdline" \
-          --aspect 18 --msgbox "${ITEMS}" 0 0
-        ;;
-      8)
-        rm -f "${TMP_PATH}/opts" >/dev/null
-        echo "5 \"Reboot after 5 seconds\"" >>"${TMP_PATH}/opts"
-        echo "0 \"No reboot\"" >>"${TMP_PATH}/opts"
-        echo "-1 \"Restart immediately\"" >>"${TMP_PATH}/opts"
-        dialog --backtitle "$(backtitle)" --colors --title "Kernelpanic" \
-          --default-item "${KERNELPANIC}" --menu "Choose a time(seconds)" 0 0 0 --file "${TMP_PATH}/opts" \
-          2>${TMP_PATH}/resp
-        [ $? -ne 0 ] && return 1
-        resp=$(cat ${TMP_PATH}/resp)
-        [ -z "${resp}" ] && return 1
-        KERNELPANIC=${resp}
-        writeConfigKey "arc.kernelpanic" "${KERNELPANIC}" "${USER_CONFIG_FILE}"
+        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
     esac
   done
@@ -439,31 +492,23 @@ function cmdlineMenu() {
 ###############################################################################
 # let user configure synoinfo entries
 function synoinfoMenu() {
-  # read synoinfo from user config
-  unset SYNOINFO
-  declare -A SYNOINFO
-  while IFS=': ' read -r KEY VALUE; do
-    [ -n "${KEY}" ] && SYNOINFO["${KEY}"]="${VALUE}"
-  done < <(readConfigMap "synoinfo" "${USER_CONFIG_FILE}")
-
-  echo "1 \"Add/edit Synoinfo item\""     >"${TMP_PATH}/menu"
-  echo "2 \"Delete Synoinfo item(s)\""    >>"${TMP_PATH}/menu"
-  echo "3 \"Show Synoinfo entries\""      >>"${TMP_PATH}/menu"
-  echo "4 \"Add Trim/Dedup to Synoinfo\"" >>"${TMP_PATH}/menu"
-
   # menu loop
   while true; do
+    echo "1 \"Add/edit Synoinfo item\""     >"${TMP_PATH}/menu"
+    echo "2 \"Delete Synoinfo item(s)\""    >>"${TMP_PATH}/menu"
+    echo "3 \"Add Trim/Dedup to Synoinfo\"" >>"${TMP_PATH}/menu"
     dialog --backtitle "$(backtitle)" --cancel-label "Exit" --menu "Choose an Option" 0 0 0 \
       --file "${TMP_PATH}/menu" 2>"${TMP_PATH}/resp"
-    [ $? -ne 0 ] && return 1
+    [ $? -ne 0 ] && break
     case "$(cat ${TMP_PATH}/resp)" in
       1)
         MSG=""
-        MSG+="Commonly used Synoinfo:\n"
+        MSG+="Commonly used Synoinfo (Format: Name=Value):\n"
         MSG+=" * \Z4maxdisks=??\Zn\n    Maximum number of disks supported.\n"
         MSG+=" * \Z4internalportcfg=0x????\Zn\n    Internal(sata) disks mask.\n"
         MSG+=" * \Z4esataportcfg=0x????\Zn\n    Esata disks mask.\n"
         MSG+=" * \Z4usbportcfg=0x????\Zn\n    USB disks mask.\n"
+        MSG+=" * \Z4SasIdxMap=0\Zn\n    Remove SAS reserved Ports.\n"
         MSG+=" * \Z4max_sys_raid_disks=??\Zn\n    Maximum number of system partition(md0) raid disks.\n"
         MSG+=" * \Z4support_glusterfs=yes\Zn\n    GlusterFS in DSM.\n"
         MSG+=" * \Z4support_sriov=yes\Zn\n    SR-IOV Support in DSM.\n"
@@ -472,20 +517,24 @@ function synoinfoMenu() {
         #MSG+=" * \Z4support_config_swap=yes\Zn\n    TO-DO.\n"
         MSG+="\nEnter the Parameter Name and Value you want to add.\n"
         LINENUM=$(($(echo -e "${MSG}" | wc -l) + 10))
+        RET=0
         while true; do
+          [ ${RET} -eq 255 ] && MSG+="Commonly used Synoinfo (Format: Name=Value):\n"
           dialog --clear --backtitle "$(backtitle)" \
             --colors --title "Synoinfo Entries" \
-            --form "${MSG}" ${LINENUM:-16} 70 2 "Name:" 1 1 "" 1 10 55 0 "Value:" 2 1 "" 2 10 55 0 \
+            --form "${MSG}" ${LINENUM:-16} 80 2 "Name:" 1 1 "" 1 10 55 0 "Value:" 2 1 "" 2 10 55 0 \
             2>"${TMP_PATH}/resp"
           RET=$?
           case ${RET} in
             0) # ok-button
               NAME="$(cat "${TMP_PATH}/resp" | sed -n '1p')"
               VALUE="$(cat "${TMP_PATH}/resp" | sed -n '2p')"
+              [[ "${NAME}" = *= ]] && NAME="${NAME%?}"
+              [[ "${VALUE}" = =* ]] && VALUE="${VALUE#*=}"
               if [ -z "${NAME//\"/}" ]; then
                 dialog --clear --backtitle "$(backtitle)" --title "User Cmdline" \
                   --yesno "Invalid Parameter Name, retry?" 0 0
-                [ $? -eq 0 ] && break
+                [ $? -eq 0 ] && continue || break
               fi
               writeConfigKey "synoinfo.\"${NAME//\"/}\"" "${VALUE}" "${USER_CONFIG_FILE}"
               break
@@ -494,7 +543,7 @@ function synoinfoMenu() {
               break
               ;;
             255) # ESC
-              break
+              # break
               ;;
           esac
         done
@@ -502,36 +551,35 @@ function synoinfoMenu() {
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       2)
+        # Read synoinfo from user config
+        unset SYNOINFO
+        declare -A SYNOINFO
+        while IFS=': ' read KEY VALUE; do
+          [ -n "${KEY}" ] && SYNOINFO["${KEY}"]="${VALUE}"
+        done < <(readConfigMap "synoinfo" "${USER_CONFIG_FILE}")
         if [ ${#SYNOINFO[@]} -eq 0 ]; then
-          dialog --backtitle "$(backtitle)" --msgbox "No Synoinfo Entries to remove" 0 0
+          dialog --backtitle "$(backtitle)" --title "Synoinfo" \
+            --msgbox "No synoinfo entries to remove" 0 0
           continue
         fi
-        ITEMS=""
-        for I in "${!SYNOINFO[@]}"; do
-          [ -z "${SYNOINFO[${I}]}" ] && ITEMS+="${I} \"\" off " || ITEMS+="${I} ${SYNOINFO[${I}]} off "
+        rm -f "${TMP_PATH}/opts"
+        for I in ${!SYNOINFO[@]}; do
+          echo "\"${I}\" \"${SYNOINFO[${I}]}\" \"off\"" >>"${TMP_PATH}/opts"
         done
-        dialog --backtitle "$(backtitle)" \
-          --checklist "Select synoinfo entry to remove" 0 0 0 ${ITEMS} \
+        dialog --backtitle "$(backtitle)" --title "Synoinfo" \
+          --checklist "Select synoinfo entry to remove" 0 0 0 --file "${TMP_PATH}/opts" \
           2>"${TMP_PATH}/resp"
-        [ $? -ne 0 ] && return 1
-        resp=$(cat ${TMP_PATH}/resp)
-        [ -z "${resp}" ] && return 1
-        for I in ${resp}; do
-          unset 'SYNOINFO[${I}]'
+        [ $? -ne 0 ] && continue
+        RESP=$(cat "${TMP_PATH}/resp")
+        [ -z "${RESP}" ] && continue
+        for I in ${RESP}; do
+          unset SYNOINFO[${I}]
           deleteConfigKey "synoinfo.\"${I}\"" "${USER_CONFIG_FILE}"
         done
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
       3)
-        ITEMS=""
-        for KEY in ${!SYNOINFO[@]}; do
-          ITEMS+="${KEY}: ${SYNOINFO[$KEY]}\n"
-        done
-        dialog --backtitle "$(backtitle)" --title "Synoinfo Entries" \
-          --aspect 18 --msgbox "${ITEMS}" 0 0
-        ;;
-      4)
         # Optimized Synoinfo
         writeConfigKey "synoinfo.support_trim" "yes" "${USER_CONFIG_FILE}"
         writeConfigKey "synoinfo.support_disk_hibernation" "yes" "${USER_CONFIG_FILE}"
@@ -579,24 +627,28 @@ function keymapMenu() {
 function storagepanelMenu() {
   CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
   if [ "${CONFDONE}" == "true" ]; then
-    dialog --backtitle "$(backtitle)" --title "StoragePanel" \
-      --aspect 18 --msgbox "StoragePanel Addon enabled." 0 0
-    ITEMS="$(echo -e "RACK_2_Bay \nRACK_4_Bay \nRACK_8_Bay \nRACK_12_Bay \nRACK_16_Bay \nRACK_24_Bay \nRACK_60_Bay \nTOWER_1_Bay \nTOWER_2_Bay \nTOWER_4_Bay \nTOWER_6_Bay \nTOWER_8_Bay \nTOWER_12_Bay \n")"
-    dialog --backtitle "$(backtitle)" --title "StoragePanel" \
-      --default-item "RACK_24_Bay" --no-items --menu "Choose a Disk Panel" 0 0 0 ${ITEMS} \
-      2>"${TMP_PATH}/resp"
-    resp=$(cat ${TMP_PATH}/resp)
-    [ -z "${resp}" ] && return 1
-    STORAGE=${resp}
-    ITEMS="$(echo -e "1X2 \n1X4 \n1X8 \n")"
-    dialog --backtitle "$(backtitle)" --title "StoragePanel" \
-      --default-item "1X8" --no-items --menu "Choose a M.2 Panel" 0 0 0 ${ITEMS} \
-      2>"${TMP_PATH}/resp"
-    resp=$(cat ${TMP_PATH}/resp)
-    [ -z "${resp}" ] && return 1
-    M2PANEL=${resp}
-    STORAGEPANEL="${STORAGE} ${M2PANEL}"
-    writeConfigKey "addons.storagepanel" "${STORAGEPANEL}" "${USER_CONFIG_FILE}"
+    while true; do
+      STORAGEPANELUSER="$(readConfigKey "addons.storagepanel" "${USER_CONFIG_FILE}")"
+      [ -n "${STORAGEPANELUSER}" ] && DISKPANELUSER="$(echo ${STORAGEPANELUSER} | cut -d' ' -f1)" || DISKPANELUSER="RACK_24_Bay"
+      [ -n "${STORAGEPANELUSER}" ] && M2PANELUSER="$(echo ${STORAGEPANELUSER} | cut -d' ' -f2)" || M2PANELUSER="1X4"
+      ITEMS="$(echo -e "RACK_2_Bay \nRACK_4_Bay \nRACK_8_Bay \nRACK_12_Bay \nRACK_16_Bay \nRACK_24_Bay \nRACK_60_Bay \nTOWER_1_Bay \nTOWER_2_Bay \nTOWER_4_Bay \nTOWER_6_Bay \nTOWER_8_Bay \nTOWER_12_Bay \n")"
+      dialog --backtitle "$(backtitle)" --title "StoragePanel" \
+        --default-item "${DISKPANELUSER}" --no-items --menu "Choose a Disk Panel" 0 0 0 ${ITEMS} \
+        2>"${TMP_PATH}/resp"
+      resp=$(cat ${TMP_PATH}/resp)
+      [ -z "${resp}" ] && break
+      STORAGE=${resp}
+      ITEMS="$(echo -e "1X2 \n1X4 \n1X8 \n")"
+      dialog --backtitle "$(backtitle)" --title "StoragePanel" \
+        --default-item "${M2PANELUSER}" --no-items --menu "Choose a M.2 Panel" 0 0 0 ${ITEMS} \
+        2>"${TMP_PATH}/resp"
+      resp=$(cat ${TMP_PATH}/resp)
+      [ -z "${resp}" ] && break
+      M2PANEL=${resp}
+      STORAGEPANEL="${STORAGE} ${M2PANEL}"
+      writeConfigKey "addons.storagepanel" "${STORAGEPANEL}" "${USER_CONFIG_FILE}"
+      break
+    done
     writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
     BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
   fi
@@ -608,8 +660,6 @@ function storagepanelMenu() {
 function sequentialIOMenu() {
   CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
   if [ "${CONFDONE}" == "true" ]; then
-    dialog --backtitle "$(backtitle)" --title "SequentialIO" \
-      --aspect 18 --msgbox "SequentialIO Addon enabled." 0 0
     while true; do
         dialog --backtitle "$(backtitle)" --cancel-label "Exit" --menu "SequentialIO" 0 0 0 \
           1 "Enable for SSD Cache" \
@@ -628,8 +678,9 @@ function sequentialIOMenu() {
             SEQUENTIAL="false"
             ;;
         esac
+        writeConfigKey "addons.sequentialio" "${SEQUENTIAL}" "${USER_CONFIG_FILE}"
+        break
     done
-    writeConfigKey "addons.sequentialio" "${SEQUENTIAL}" "${USER_CONFIG_FILE}"
     writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
     BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
   fi
@@ -646,7 +697,7 @@ function backupMenu() {
       2 "Restore Encryption Key from DSM" \
       3 "Backup Encryption Key to DSM" \
       2>"${TMP_PATH}/resp"
-    [ $? -ne 0 ] && return 1
+    [ $? -ne 0 ] && break
     case "$(cat ${TMP_PATH}/resp)" in
       1)
         DSMROOTS="$(findDSMRoot)"
@@ -668,7 +719,7 @@ function backupMenu() {
             PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
             if [ -n "${MODEL}" ] && [ -n "${PRODUCTVER}" ]; then
               TEXT="Installation found:\nModel: ${MODELID:-${MODEL}}\nVersion: ${PRODUCTVER}"
-              SN="$(readConfigKey "arc.sn" "${USER_CONFIG_FILE}")"
+              SN="$(readConfigKey "sn" "${USER_CONFIG_FILE}")"
               TEXT+="\nSerial: ${SN}"
               ARCPATCH="$(readConfigKey "arc.patch" "${USER_CONFIG_FILE}")"
               TEXT+="\nArc Patch: ${ARCPATCH}"
@@ -696,6 +747,8 @@ function backupMenu() {
           2>"${TMP_PATH}/resp"
           resp=$(cat ${TMP_PATH}/resp)
           [ -z "${resp}" ] && return 1
+          # Check for compatibility
+          compatboot
           if [ ${resp} -eq 1 ]; then
             arcSummary
           elif [ ${resp} -eq 2 ]; then
@@ -770,39 +823,44 @@ function backupMenu() {
 ###############################################################################
 # Shows update menu to user
 function updateMenu() {
+  ARCBRANCH="$(readConfigKey "arc.branch" "${USER_CONFIG_FILE}")"
   NEXT="1"
   while true; do
     dialog --backtitle "$(backtitle)" --cancel-label "Exit" \
       --menu "Choose an Option" 0 0 0 \
-      1 "Full-Upgrade Loader" \
-      2 "Update Addons" \
-      3 "Update Configs" \
-      4 "Update LKMs" \
-      5 "Update Modules" \
-      6 "Update Patches" \
-      7 "Automated Update Mode" \
+      1 "Automated Update Mode" \
+      2 "Full-Upgrade Loader (reflash)" \
+      3 "Update Loader" \
+      4 "Update Addons" \
+      5 "Update Configs" \
+      6 "Update LKMs" \
+      7 "Update Modules" \
+      8 "Update Patches" \
+      9 "Update Custom Kernel" \
+      0 "Branch: (${ARCBRANCH:-"stable"})" \
       2>"${TMP_PATH}/resp"
-    [ $? -ne 0 ] && return 1
+    [ $? -ne 0 ] && break
     case "$(cat ${TMP_PATH}/resp)" in
       1)
-        dialog --backtitle "$(backtitle)" --title "Upgrade Loader" --aspect 18 \
-          --infobox "Checking latest version..." 0 0
-        ACTUALVERSION="${ARC_VERSION}"
+        dialog --backtitle "$(backtitle)" --title "Automated Update" --aspect 18 \
+          --msgbox "Loader will proceed Automated Update Mode.\nPlease wait until progress is finished!" 0 0
+        . ${ARC_PATH}/update.sh
+        ;;
+      2)
         # Ask for Tag
+        TAG=""
+        NEWVER="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+        OLDVER="$(cat ${PART1_PATH}/ARC-VERSION)"
         dialog --clear --backtitle "$(backtitle)" --title "Upgrade Loader" \
-          --menu "Which Version?" 0 0 0 \
-          1 "Latest" \
+          --menu "Current: ${OLDVER} -> Which Version?" 7 50 0 \
+          1 "Latest ${NEWVER}" \
           2 "Select Version" \
         2>"${TMP_PATH}/opts"
+        [ $? -ne 0 ] && continue
         opts=$(cat ${TMP_PATH}/opts)
         [ -z "${opts}" ] && return 1
         if [ ${opts} -eq 1 ]; then
-          TAG="$(curl --interface ${ARCNIC} -m 5 -w "%{http_code}" -skL "https://api.github.com/repos/AuxXxilium/arc/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
-          if [ $? -ne 0 ] || [ ${STATUS} -ne 200 ] || [ -z "${TAG}" ]; then
-            dialog --backtitle "$(backtitle)" --title "Upgrade Loader" --aspect 18 \
-              --msgbox "Error checking new Version!" 0 0
-            return 1
-          fi
+          TAG=""
         elif [ ${opts} -eq 2 ]; then
           dialog --backtitle "$(backtitle)" --title "Upgrade Loader" \
           --inputbox "Type the Version!" 0 0 \
@@ -810,47 +868,45 @@ function updateMenu() {
           TAG=$(cat "${TMP_PATH}/input")
           [ -z "${TAG}" ] && return 1
         fi
-        dialog --backtitle "$(backtitle)" --title "Upgrade Loader" --aspect 18 \
-          --infobox "Downloading ${TAG}" 0 0
-        if [ "${ACTUALVERSION}" == "${TAG}" ]; then
-          dialog --backtitle "$(backtitle)" --title "Upgrade Loader" --aspect 18 \
-            --yesno "No new version. Actual version is ${ACTUALVERSION}\nForce update?" 0 0
-          [ $? -ne 0 ] && return 1
-        fi
-        (
-          # Download update file
-          curl --interface ${ARCNIC} -#kL "https://github.com/AuxXxilium/arc/releases/download/${TAG}/arc-${TAG}.img.zip" -o "${TMP_PATH}/arc-${TAG}.img.zip" 2>&1 | while IFS= read -r -n1 char; do
-            [[ $char =~ [0-9] ]] && keep=1 ;
-            [[ $char == % ]] && echo "Download:$progress" && progress="" && keep=0 ;
-            [[ $keep == 1 ]] && progress="$progress$char" ;
-          done
-          if [ -f "${TMP_PATH}/arc-${TAG}.img.zip" ]; then
-            echo "Downloading Updatefile successful!"
-          else
-            echo "Error downloading Updatefile!"
-            sleep 5
-            return 1
-          fi
-          unzip -oq "${TMP_PATH}/arc-${TAG}.img.zip" -d "${TMP_PATH}"
-          rm -f "${TMP_PATH}/arc-${TAG}.img.zip" >/dev/null
-          echo "Installing new Loader Image..."
-          # Process complete update
-          umount "${PART1_PATH}" "${PART2_PATH}" "${PART3_PATH}"
-          dd if="${TMP_PATH}/arc.img" of=$(blkid | grep 'LABEL="ARC3"' | cut -d3 -f1) bs=1M conv=fsync
-          # Ask for Boot
-          rm -f "${TMP_PATH}/arc.img" >/dev/null
-        ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Full-Upgrade Loader" \
-          --progressbox "Upgrading ..." 20 70
-        dialog --backtitle "$(backtitle)" --title "Upgrade Loader" --aspect 18 \
-          --yesno "Arc Upgrade successful. New Version: ${TAG}\nUse Recover from DSM to get your old Config.\nReboot?" 0 0
-        [ $? -ne 0 ] && return 1
+        upgradeLoader "${TAG}"
+        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         exec reboot && exit 0
         ;;
-      2)
+      3)
         # Ask for Tag
+        TAG=""
+        NEWVER="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+        OLDVER="$(cat ${PART1_PATH}/ARC-VERSION)"
+        dialog --clear --backtitle "$(backtitle)" --title "Update Loader" \
+          --menu "Current: ${OLDVER} -> Which Version?" 7 50 0 \
+          1 "Latest ${NEWVER}" \
+          2 "Select Version" \
+        2>"${TMP_PATH}/opts"
+        [ $? -ne 0 ] && continue
+        opts=$(cat ${TMP_PATH}/opts)
+        [ -z "${opts}" ] && return 1
+        if [ ${opts} -eq 1 ]; then
+          TAG=""
+        elif [ ${opts} -eq 2 ]; then
+          dialog --backtitle "$(backtitle)" --title "Update Loader" \
+          --inputbox "Type the Version!" 0 0 \
+          2>"${TMP_PATH}/input"
+          TAG=$(cat "${TMP_PATH}/input")
+          [ -z "${TAG}" ] && return 1
+        fi
+        updateLoader "${TAG}"
+        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+        ;;
+      4)
+        # Ask for Tag
+        TAG=""
+        NEWVER="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc-addons/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+        OLDVER="$(cat ${ADDONS_PATH}/VERSION)"
         dialog --clear --backtitle "$(backtitle)" --title "Update Addons" \
-          --menu "Which Version?" 0 0 0 \
-          1 "Latest" \
+          --menu "Current: ${OLDVER} -> Which Version?" 7 50 0 \
+          1 "Latest ${NEWVER}" \
           2 "Select Version" \
         2>"${TMP_PATH}/opts"
         [ $? -ne 0 ] && continue
@@ -869,11 +925,14 @@ function updateMenu() {
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
-      3)
+      5)
         # Ask for Tag
+        TAG=""
+        NEWVER="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc-configs/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+        OLDVER="$(cat ${MODEL_CONFIG_PATH}/VERSION)"
         dialog --clear --backtitle "$(backtitle)" --title "Update Configs" \
-          --menu "Which Version?" 0 0 0 \
-          1 "Latest" \
+          --menu "Current: ${OLDVER} -> Which Version?" 7 50 0 \
+          1 "Latest ${NEWVER}" \
           2 "Select Version" \
         2>"${TMP_PATH}/opts"
         opts=$(cat ${TMP_PATH}/opts)
@@ -893,11 +952,14 @@ function updateMenu() {
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
-      4)
+      6)
         # Ask for Tag
+        TAG=""
+        NEWVER="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc-lkm/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+        OLDVER="$(cat ${LKMS_PATH}/VERSION)"
         dialog --clear --backtitle "$(backtitle)" --title "Update LKMs" \
-          --menu "Which Version?" 0 0 0 \
-          1 "Latest" \
+          --menu "Current: ${OLDVER} -> Which Version?" 7 50 0 \
+          1 "Latest ${NEWVER}" \
           2 "Select Version" \
         2>"${TMP_PATH}/opts"
         opts=$(cat ${TMP_PATH}/opts)
@@ -915,11 +977,14 @@ function updateMenu() {
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
-      5)
+      7)
         # Ask for Tag
+        TAG=""
+        NEWVER="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc-modules/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+        OLDVER="$(cat ${MODULES_PATH}/VERSION)"
         dialog --clear --backtitle "$(backtitle)" --title "Update Modules" \
-          --menu "Which Version?" 0 0 0 \
-          1 "Latest" \
+          --menu "Current: ${OLDVER} -> Which Version?" 7 50 0 \
+          1 "Latest ${NEWVER}" \
           2 "Select Version" \
         2>"${TMP_PATH}/opts"
         opts=$(cat ${TMP_PATH}/opts)
@@ -937,12 +1002,16 @@ function updateMenu() {
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
-      6)
+      8)
         # Ask for Tag
+        TAG=""
+        NEWVER="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc-patches/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+        OLDVER="$(cat ${PATCH_PATH}/VERSION)"
         dialog --clear --backtitle "$(backtitle)" --title "Update Patches" \
-          --menu "Which Version?" 0 0 0 \
-          1 "Latest" \
+          --menu "Current: ${OLDVER} -> Which Version?" 7 50 0 \
+          1 "Latest ${NEWVER}" \
           2 "Select Version" \
+        2>"${TMP_PATH}/opts"
         2>"${TMP_PATH}/opts"
         opts=$(cat ${TMP_PATH}/opts)
         [ -z "${opts}" ] && return 1
@@ -959,10 +1028,50 @@ function updateMenu() {
         writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
         BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
-      7)
-        dialog --backtitle "$(backtitle)" --title "Automated Update" --aspect 18 \
-          --msgbox "Loader will reboot to Automated Update Mode.\nPlease wait until progress is finished!" 0 0
-        rebootTo update
+      9)
+        # Ask for Tag
+        TAG=""
+        NEWVER="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc-custom/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+        OLDVER="$(cat ${CUSTOM_PATH}/VERSION)"
+        dialog --clear --backtitle "$(backtitle)" --title "Update Custom" \
+          --menu "Current: ${OLDVER} -> Which Version?" 7 50 0 \
+          1 "Latest ${NEWVER}" \
+          2 "Select Version" \
+        2>"${TMP_PATH}/opts"
+        opts=$(cat ${TMP_PATH}/opts)
+        [ -z "${opts}" ] && return 1
+        if [ ${opts} -eq 1 ]; then
+          TAG=""
+        elif [ ${opts} -eq 2 ]; then
+          dialog --backtitle "$(backtitle)" --title "Update Custom Kernel" \
+          --inputbox "Type the Version!" 0 0 \
+          2>"${TMP_PATH}/input"
+          TAG=$(cat "${TMP_PATH}/input")
+          [ -z "${TAG}" ] && return 1
+        fi
+        updateCustom "${TAG}"
+        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+        ;;
+      0)
+        # Ask for Arc Branch
+        dialog --clear --backtitle "$(backtitle)" --title "Switch Buildsystem" \
+          --menu "Which Branch?" 7 50 0 \
+          1 "Stable Buildsystem" \
+          2 "Next Buildsystem (latest)" \
+        2>"${TMP_PATH}/opts"
+        opts=$(cat ${TMP_PATH}/opts)
+        [ -z "${opts}" ] && return 1
+        if [ ${opts} -eq 1 ]; then
+          writeConfigKey "arc.branch" "" "${USER_CONFIG_FILE}"
+        elif [ ${opts} -eq 2 ]; then
+          writeConfigKey "arc.branch" "next" "${USER_CONFIG_FILE}"
+        fi
+        ARCBRANCH="$(readConfigKey "arc.branch" "${USER_CONFIG_FILE}")"
+        dialog --backtitle "$(backtitle)" --title "Switch Buildsystem" --aspect 18 \
+          --msgbox "Using ${ARCBRANCH} Buildsystem, now.\nUpdate the Loader to apply the changes!" 7 50
+        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
         ;;
     esac
   done
@@ -1001,9 +1110,11 @@ function sysinfo() {
   [ -d /sys/firmware/efi ] && BOOTSYS="UEFI" || BOOTSYS="BIOS"
   # Get System Informations
   CPU=$(echo $(cat /proc/cpuinfo 2>/dev/null | grep 'model name' | uniq | awk -F':' '{print $2}'))
+  SECURE=$(dmesg 2>/dev/null | grep -i "Secure Boot" | awk -F'] ' '{print $2}')
   VENDOR=$(dmesg 2>/dev/null | grep -i "DMI:" | sed 's/\[.*\] DMI: //i')
-  ETHX=$(ls /sys/class/net/ 2>/dev/null | grep eth) || true
-  NIC="$(readConfigKey "device.nic" "${USER_CONFIG_FILE}")"
+  ETHX="$(ls /sys/class/net/ 2>/dev/null | grep eth)"
+  ETHN="$(echo ${ETHX} | wc -w)"
+  ARCBRANCH="$(readConfigKey "arc.branch" "${USER_CONFIG_FILE}")"
   CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
   BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
   if [ "${CONFDONE}" == "true" ]; then
@@ -1012,7 +1123,7 @@ function sysinfo() {
     PRODUCTVER="$(readConfigKey "productver" "${USER_CONFIG_FILE}")"
     PLATFORM="$(readConfigKey "platform" "${USER_CONFIG_FILE}")"
     DT="$(readConfigKey "platforms.${PLATFORM}.dt" "${P_FILE}")"
-    KVER="$(readConfigKey "platforms.${PLATFORM}.productvers.[${PRODUCTVER}].kver" "${P_FILE}")"
+    KVER="$(readConfigKey "platforms.${PLATFORM}.productvers.\"${PRODUCTVER}\".kver" "${P_FILE}")"
     ARCPATCH="$(readConfigKey "arc.patch" "${USER_CONFIG_FILE}")"
     ADDONSINFO="$(readConfigEntriesArray "addons" "${USER_CONFIG_FILE}")"
     REMAP="$(readConfigKey "arc.remap" "${USER_CONFIG_FILE}")"
@@ -1022,115 +1133,134 @@ function sysinfo() {
     elif [ "${REMAP}" == "remap" ]; then
       PORTMAP="$(readConfigKey "cmdline.sata_remap" "${USER_CONFIG_FILE}")"
     elif [ "${REMAP}" == "ahci" ]; then
-      PORTMAP="$(readConfigKey "cmdline.ahci_remap" "${USER_CONFIG_FILE}")"
+      AHCIPORTMAP="$(readConfigKey "cmdline.ahci_remap" "${USER_CONFIG_FILE}")"
     fi
+    USERCMDLINEINFO="$(readConfigMap "cmdline" "${USER_CONFIG_FILE}")"
+    USERSYNOINFO="$(readConfigMap "synoinfo" "${USER_CONFIG_FILE}")"
   fi
-  DIRECTBOOT="$(readConfigKey "arc.directboot" "${USER_CONFIG_FILE}")"
+  DIRECTBOOT="$(readConfigKey "directboot" "${USER_CONFIG_FILE}")"
   LKM="$(readConfigKey "lkm" "${USER_CONFIG_FILE}")"
-  KERNELLOAD="$(readConfigKey "arc.kernelload" "${USER_CONFIG_FILE}")"
-  MACSYS="$(readConfigKey "arc.macsys" "${USER_CONFIG_FILE}")"
+  KERNELLOAD="$(readConfigKey "kernelload" "${USER_CONFIG_FILE}")"
   OFFLINE="$(readConfigKey "arc.offline" "${USER_CONFIG_FILE}")"
-  ARCIPV6="$(readConfigKey "arc.ipv6" "${USER_CONFIG_FILE}")"
   CONFIGVER="$(readConfigKey "arc.version" "${USER_CONFIG_FILE}")"
-  HDDSORT="$(readConfigKey "arc.hddsort" "${USER_CONFIG_FILE}")"
+  HDDSORT="$(readConfigKey "hddsort" "${USER_CONFIG_FILE}")"
   EXTERNALCONTROLLER="$(readConfigKey "device.externalcontroller" "${USER_CONFIG_FILE}")"
   HARDDRIVES="$(readConfigKey "device.harddrives" "${USER_CONFIG_FILE}")"
   DRIVES="$(readConfigKey "device.drives" "${USER_CONFIG_FILE}")"
-  MODULESINFO=$(lsmod | awk -F' ' '{print $1}' | grep -v 'Module')
-  MODULESVERSION=$(cat "${MODULES_PATH}/VERSION")
-  ADDONSVERSION=$(cat "${ADDONS_PATH}/VERSION")
-  LKMVERSION=$(cat "${LKMS_PATH}/VERSION")
-  CONFIGSVERSION=$(cat "${MODEL_CONFIG_PATH}/VERSION")
-  PATCHESVERSION=$(cat "${PATCH_PATH}/VERSION")
+  MODULESINFO="$(lsmod | awk -F' ' '{print $1}' | grep -v 'Module')"
+  MODULESVERSION="$(cat "${MODULES_PATH}/VERSION")"
+  ADDONSVERSION="$(cat "${ADDONS_PATH}/VERSION")"
+  LKMVERSION="$(cat "${LKMS_PATH}/VERSION")"
+  CONFIGSVERSION="$(cat "${MODEL_CONFIG_PATH}/VERSION")"
+  PATCHESVERSION="$(cat "${PATCH_PATH}/VERSION")"
+  TIMEOUT=5
   TEXT=""
   # Print System Informations
-  TEXT+="\n\Z4> System: ${MACHINE} | ${BOOTSYS}\Zn"
+  TEXT+="\n\Z4> System: ${MACHINE} | ${BOOTSYS} | ${BUS}\Zn"
   TEXT+="\n  Vendor: \Zb${VENDOR}\Zn"
   TEXT+="\n  CPU: \Zb${CPU}\Zn"
+  if [ $(lspci -d ::300 | wc -l) -gt 0 ]; then
+    for PCI in $(lspci -d ::300 | awk '{print $1}'); do
+      GPUNAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
+      TEXT+="\n  iGPU: \Zb${GPUNAME}\Zn"
+    done
+  elif [ $(lspci -d ::380 | wc -l) -gt 0 ]; then
+    for PCI in $(lspci -d ::380 | awk '{print $1}'); do
+      GPUNAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
+      TEXT+="\n  GPU: \Zb${GPUNAME}\Zn"
+    done
+  fi
   TEXT+="\n  Memory: \Zb$((${RAMTOTAL}))GB\Zn"
   TEXT+="\n  AES | ACPI: \Zb${AESSYS} | ${ACPISYS}\Zn"
-  TEXT+="\n  Date: \Zb$(date)\Zn"
+  TEXT+="\n  CPU Scaling: \Zb${CPUFREQ}\Zn"
+  TEXT+="\n  Secure Boot: \Zb${SECURE}\Zn"
+  TEXT+="\n  Bootdisk: \Zb${LOADER_DISK}\Zn"
+  TEXT+="\n  Date/Time: \Zb$(date)\Zn"
   TEXT+="\n"
-  TEXT+="\n\Z4> Network: ${NIC} NIC\Zn"
+  TEXT+="\n\Z4> Network: ${ETHN} NIC\Zn\n"
   for ETH in ${ETHX}; do
-    IP=""
-    STATICIP="$(readConfigKey "static.${ETH}" "${USER_CONFIG_FILE}")"
+    COUNT=0
     DRIVER=$(ls -ld /sys/class/net/${ETH}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')
     NETBUS=$(ethtool -i ${ETH} 2>/dev/null | grep bus-info | cut -d' ' -f2)
-    MAC="$(readConfigKey "mac.${ETH}" "${USER_CONFIG_FILE}")"
-    MACR=$(cat /sys/class/net/${ETH}/address | sed 's/://g')
-    COUNT=0
     while true; do
-      if [ "${STATICIP}" == "true" ]; then
-        IP="$(readConfigKey "ip.${ETH}" "${USER_CONFIG_FILE}")"
-        MSG="STATIC"
-      else
-        IP=$(getIP ${ETH})
-        MSG="DHCP"
+      if ! ip link show ${ETH} 2>/dev/null | grep -q 'UP'; then
+        TEXT+="\n${DRIVER}: \ZbDOWN\Zn"
+        break
       fi
+      if ethtool ${ETH} 2>/dev/null | grep 'Link detected' | grep -q 'no'; then
+        TEXT+="\n${DRIVER}: \ZbNOT CONNECTED\Zn"
+        break
+      fi
+      if [ ${COUNT} -ge ${TIMEOUT} ]; then
+        TEXT+="\n${DRIVER}: \ZbTIMEOUT\Zn"
+        break
+      fi
+      COUNT=$((${COUNT} + 1))
+      IP="$(getIP ${ETH})"
       if [ -n "${IP}" ]; then
         SPEED=$(ethtool ${ETH} 2>/dev/null | grep "Speed:" | awk '{print $2}')
         if [[ "${IP}" =~ ^169\.254\..* ]]; then
-          TEXT+="\n${ETH} -> ${DRIVER} (${SPEED} | ${MSG}):\Zb LINK LOCAL | Mac: ${MACR} (${MAC})\Zn"
+          TEXT+="${DRIVER} (${SPEED}): \ZbLINK LOCAL (No DHCP server found.)\Zn"
         else
-          TEXT+="\n${ETH} -> ${DRIVER} (${SPEED} | ${MSG}):\Zb ${IP} | Mac: ${MACR} (${MAC})\Zn"
+          TEXT+="${DRIVER} (${SPEED}): \Zb${IP}\Zn"
         fi
         break
       fi
-      if [ ${COUNT} -gt 3 ]; then
-        TEXT+="\n${ETH} -> ${DRIVER}\Zb: TIMEOUT | MAC: ${MACR} (${MAC})\Zn"
-        break
-      fi
-      sleep 3
-      if ethtool ${ETH} 2>/dev/null | grep 'Link detected' | grep -q 'no'; then
-        TEXT+="\n${ETH} -> ${DRIVER}\Zb: NOT CONNECTED | MAC: ${MACR} (${MAC})\Zn"
-        break
-      fi
-      COUNT=$((${COUNT} + 3))
+      sleep 1
     done
-    TEXT+="\n\Zb$(lspci -s ${NETBUS} -nnk)\Zn\n"
+    TEXT+="\n\Zb$(lspci -s ${NETBUS} -nnk | awk '{$1=""}1' | awk '{$1=$1};1')\Zn\n"
   done
   # Print Config Informations
-  TEXT+="\n"
   TEXT+="\n\Z4> Arc: ${ARC_VERSION}\Zn"
+  [ -n "${ARCBRANCH}" ] && TEXT+="\n  Branch: \Zb${ARCBRANCH}\Zn"
   TEXT+="\n  Subversion: \ZbAddons ${ADDONSVERSION} | Configs ${CONFIGSVERSION} | LKM ${LKMVERSION} | Modules ${MODULESVERSION} | Patches ${PATCHESVERSION}\Zn"
-  TEXT+="\n\Z4>> Loader\Zn"
-  TEXT+="\n   Config | Build: \Zb${CONFDONE} | ${BUILDDONE}\Zn"
-  TEXT+="\n   Config Version: \Zb${CONFIGVER}\Zn"
+  TEXT+="\n  Config | Build: \Zb${CONFDONE} | ${BUILDDONE}\Zn"
+  TEXT+="\n  Config Version: \Zb${CONFIGVER}\Zn"
   if [ "${CONFDONE}" == "true" ]; then
-    TEXT+="\n\Z4>> DSM ${PRODUCTVER}: ${MODELID:-${MODEL}}\Zn"
-    TEXT+="\n   Kernel | LKM: \Zb${KVER} | ${LKM}\Zn"
-    TEXT+="\n   Platform | DeviceTree: \Zb${PLATFORM} | ${DT}\Zn"
-    TEXT+="\n   Arc Patch | Kernelload: \Zb${ARCPATCH} | ${KERNELLOAD}\Zn"
-    TEXT+="\n   Directboot: \Zb${DIRECTBOOT}\Zn"
-    TEXT+="\n   Addons selected: \Zb${ADDONSINFO}\Zn"
+    TEXT+="\n\Z4> DSM ${PRODUCTVER}: ${MODELID:-${MODEL}}\Zn"
+    TEXT+="\n  Kernel | LKM: \Zb${KVER} | ${LKM}\Zn"
+    TEXT+="\n  Platform | DeviceTree: \Zb${PLATFORM} | ${DT}\Zn"
+    TEXT+="\n  Arc Patch: \Zb${ARCPATCH}\Zn"
+    TEXT+="\n  Kernelload: \Zb${KERNELLOAD}\Zn"
+    TEXT+="\n  Directboot: \Zb${DIRECTBOOT}\Zn"
+    TEXT+="\n  Addons selected: \Zb${ADDONSINFO}\Zn"
   fi
-  TEXT+="\n   Modules loaded: \Zb${MODULESINFO}\Zn"
-  TEXT+="\n\Z4>> Settings\Zn"
-  TEXT+="\n   MacSys: \Zb${MACSYS}\Zn"
-  TEXT+="\n   IPv6: \Zb${ARCIPV6}\Zn"
-  TEXT+="\n   Offline Mode: \Zb${OFFLINE}\Zn"
+  TEXT+="\n  Modules loaded: \Zb${MODULESINFO}\Zn"
+  if [ "${CONFDONE}" == "true" ]; then
+    [ -n "${USERCMDLINEINFO}" ] && TEXT+="\n  User Cmdline: \Zb${USERCMDLINEINFO}\Zn"
+    TEXT+="\n  User Synoinfo: \Zb${USERSYNOINFO}\Zn"
+  fi
+  TEXT+="\n"
+  TEXT+="\n\Z4> Settings\Zn"
+  TEXT+="\n  Offline Mode: \Zb${OFFLINE}\Zn"
   if [[ "${REMAP}" == "acports" || "${REMAP}" == "maxports" ]]; then
-    TEXT+="\n   SataPortMap | DiskIdxMap: \Zb${PORTMAP} | ${DISKMAP}\Zn"
+    TEXT+="\n  SataPortMap | DiskIdxMap: \Zb${PORTMAP} | ${DISKMAP}\Zn"
   elif [ "${REMAP}" == "remap" ]; then
-    TEXT+="\n   SataRemap: \Zb${PORTMAP}\Zn"
+    TEXT+="\n  SataRemap: \Zb${PORTMAP}\Zn"
+  elif [ "${REMAP}" == "ahci" ]; then
+    TEXT+="\n  AhciRemap: \Zb${AHCIPORTMAP}\Zn"
   elif [ "${REMAP}" == "user" ]; then
-    TEXT+="\n   PortMap: \Zb"User"\Zn"
+    TEXT+="\n  PortMap: \Zb"User"\Zn"
+    [ -n "${PORTMAP}" ] && TEXT+="\n  SataPortmap: \Zb${PORTMAP}\Zn"
+    [ -n "${DISKMAP}" ] && TEXT+="\n  DiskIdxMap: \Zb${DISKMAP}\Zn"
+    [ -n "${PORTREMAP}" ] && TEXT+="\n  SataRemap: \Zb${PORTREMAP}\Zn"
+    [ -n "${AHCIPORTREMAP}" ] && TEXT+="\n  AhciRemap: \Zb${AHCIPORTREMAP}\Zn"
   fi
   if [ "${DT}" == "true" ]; then
-    TEXT+="\n   Hotplug: \Zb${HDDSORT}\Zn"
+    TEXT+="\n  Hotplug: \Zb${HDDSORT}\Zn"
   fi
   TEXT+="\n"
   # Check for Controller // 104=RAID // 106=SATA // 107=SAS // 100=SCSI // c03=USB
   TEXT+="\n\Z4> Storage\Zn"
-  TEXT+="\n  External Controller: \Zb${EXTERNALCONTROLLER}\Zn"
-  TEXT+="\n  Drives | Harddrives: \Zb${DRIVES} | ${HARDDRIVES}\Zn"
+  TEXT+="\n  Additional Controller: \Zb${EXTERNALCONTROLLER}\Zn"
+  TEXT+="\n  Disks | Internal: \Zb${DRIVES} | ${HARDDRIVES}\Zn"
+  TEXT+="\n"
   # Get Information for Sata Controller
   NUMPORTS=0
   if [ $(lspci -d ::106 | wc -l) -gt 0 ]; then
     TEXT+="\n  SATA Controller:\n"
     for PCI in $(lspci -d ::106 | awk '{print $1}'); do
-      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://")
+      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
       TEXT+="\Zb  ${NAME}\Zn\n  Ports: "
       PORTS=$(ls -l /sys/class/scsi_host | grep "${PCI}" | awk -F'/' '{print $NF}' | sed 's/host//' | sort -n)
       for P in ${PORTS}; do
@@ -1146,97 +1276,115 @@ function sysinfo() {
           TEXT+="\Zb$(printf "%02d" ${P})\Zn "
         fi
       done
-      TEXT+="\n  Ports with color \Z1\Zbred\Zn as DUMMY, color \Z2\Zbgreen\Zn has drive connected.\n"
+      TEXT+="\n  Ports with color \Z1\Zbred\Zn as DUMMY, color \Z2\Zbgreen\Zn has a Disk connected.\n"
     done
   fi
   if [ $(lspci -d ::107 | wc -l) -gt 0 ]; then
     TEXT+="\n  SAS Controller:\n"
     for PCI in $(lspci -d ::107 | awk '{print $1}'); do
-      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://")
+      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
       PORT=$(ls -l /sys/class/scsi_host | grep "${PCI}" | awk -F'/' '{print $NF}' | sed 's/host//' | sort -n)
       PORTNUM=$(lsscsi -b | grep -v - | grep "\[${PORT}:" | wc -l)
-      TEXT+="\Zb  ${NAME}\Zn\n  Drives: ${PORTNUM}\n"
+      TEXT+="\Zb  ${NAME}\Zn\n  Disks: ${PORTNUM}\n"
       NUMPORTS=$((${NUMPORTS} + ${PORTNUM}))
     done
   fi
   if [ $(lspci -d ::104 | wc -l) -gt 0 ]; then
     TEXT+="\n  Raid Controller:\n"
     for PCI in $(lspci -d ::104 | awk '{print $1}'); do
-      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://")
+      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
       PORT=$(ls -l /sys/class/scsi_host | grep "${PCI}" | awk -F'/' '{print $NF}' | sed 's/host//' | sort -n)
       PORTNUM=$(lsscsi -b | grep -v - | grep "\[${PORT}:" | wc -l)
-      TEXT+="\Zb  ${NAME}\Zn\n  Drives: ${PORTNUM}\n"
+      TEXT+="\Zb  ${NAME}\Zn\n  Disks: ${PORTNUM}\n"
       NUMPORTS=$((${NUMPORTS} + ${PORTNUM}))
     done
   fi
   if [ $(lspci -d ::100 | wc -l) -gt 0 ]; then
     TEXT+="\n  SCSI Controller:\n"
     for PCI in $(lspci -d ::100 | awk '{print $1}'); do
-      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://")
+      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
       PORT=$(ls -l /sys/class/scsi_host | grep "${PCI}" | awk -F'/' '{print $NF}' | sed 's/host//' | sort -n)
       PORTNUM=$(lsscsi -b | grep -v - | grep "\[${PORT}:" | wc -l)
-      TEXT+="\Zb  ${NAME}\Zn\n  Drives: ${PORTNUM}\n"
+      TEXT+="\Zb  ${NAME}\Zn\n  Disks: ${PORTNUM}\n"
       NUMPORTS=$((${NUMPORTS} + ${PORTNUM}))
     done
   fi
   if [[ -d "/sys/class/scsi_host" && $(ls -l /sys/class/scsi_host | grep usb | wc -l) -gt 0 ]]; then
     TEXT+="\n  USB Controller:\n"
     for PCI in $(lspci -d ::c03 | awk '{print $1}'); do
-      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://")
+      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
       PORT=$(ls -l /sys/class/scsi_host | grep "${PCI}" | awk -F'/' '{print $NF}' | sed 's/host//' | sort -n)
       PORTNUM=$(lsscsi -b | grep -v - | grep "\[${PORT}:" | wc -l)
       [ ${PORTNUM} -eq 0 ] && continue
-      TEXT+="\Zb  ${NAME}\Zn\n  Drives: ${PORTNUM}\n"
+      TEXT+="\Zb  ${NAME}\Zn\n  Disks: ${PORTNUM}\n"
       NUMPORTS=$((${NUMPORTS} + ${PORTNUM}))
     done
   fi
   if [[ -d "/sys/class/mmc_host" && $(ls -l /sys/class/mmc_host | grep mmc_host | wc -l) -gt 0 ]]; then
     TEXT+="\n  MMC Controller:\n"
     for PCI in $(lspci -d ::805 | awk '{print $1}'); do
-      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://")
+      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
       PORTNUM=$(ls -l /sys/class/mmc_host | grep "${PCI}" | wc -l)
       PORTNUM=$(ls -l /sys/block/mmc* | grep "${PCI}" | wc -l)
       [ ${PORTNUM} -eq 0 ] && continue
-      TEXT+="\Zb  ${NAME}\Zn\n  Drives: ${PORTNUM}\n"
+      TEXT+="\Zb  ${NAME}\Zn\n  Disks: ${PORTNUM}\n"
       NUMPORTS=$((${NUMPORTS} + ${PORTNUM}))
     done
   fi
   if [ $(lspci -d ::108 | wc -l) -gt 0 ]; then
     TEXT+="\n  NVMe Controller:\n"
     for PCI in $(lspci -d ::108 | awk '{print $1}'); do
-      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://")
+      NAME=$(lspci -s "${PCI}" | sed "s/\ .*://" | awk '{$1=""}1' | awk '{$1=$1};1')
       PORT=$(ls -l /sys/class/nvme | grep "${PCI}" | awk -F'/' '{print $NF}' | sed 's/nvme//' | sort -n)
       PORTNUM=$(lsscsi -b | grep -v - | grep "\[N:${PORT}:" | wc -l)
-      TEXT+="\Zb  ${NAME}\Zn\n  Drives: ${PORTNUM}\n"
+      TEXT+="\Zb  ${NAME}\Zn\n  Disks: ${PORTNUM}\n"
       NUMPORTS=$((${NUMPORTS} + ${PORTNUM}))
     done
   fi
-  TEXT+="\n  Drives total: \Zb${NUMPORTS}\Zn"
+  TEXT+="\n  Total Disks: \Zb${NUMPORTS}\Zn"
   [ -f "${TMP_PATH}/diag" ] && rm -f "${TMP_PATH}/diag" >/dev/null
   echo -e "${TEXT}" >"${TMP_PATH}/diag"
-  dialog --backtitle "$(backtitle)" --colors --title "Sysinfo" \
-    --help-button --help-label "Networkdiag" --extra-button --extra-label "Upload" \
-    --msgbox "${TEXT}" 0 0
-  RET=$?
-  case ${RET} in
-  0) # ok-button
-    return 0
-    ;;
-  2) # help-button
-    networkdiag
-    ;;
-  3) # extra-button
-    if [ -f "${TMP_PATH}/diag" ]; then
-      GENHASH="$(cat "${TMP_PATH}/diag" | curl -s -F "content=<-" http://dpaste.com/api/v2/ | cut -c 19-)"
-      dialog --backtitle "$(backtitle)" --title "Sysinfo Upload" --msgbox "Your Code: ${GENHASH}" 0 0
-    else
-      dialog --backtitle "$(backtitle)" --title "Sysinfo Upload" --msgbox "No Diag File found!" 0 0
-    fi
-    ;;
-  255) # ESC
-    return 0
-    ;;
-  esac
+  while true; do
+    dialog --backtitle "$(backtitle)" --colors --ok-label "Exit" --help-button --help-label "Show Cmdline" \
+      --extra-button --extra-label "Upload" --title "Sysinfo" --msgbox "${TEXT}" 0 0
+    RET=$?
+    case ${RET} in
+      0) # ok-button
+        return 0
+        break
+        ;;
+      2) # help-button
+        getCMDline
+        ;;
+      3) # extra-button
+        uploadDiag
+        ;;
+      255) # ESC-button
+        return 0
+        break
+        ;;
+    esac
+  done
+  return
+}
+
+function getCMDline () {
+  if [ -f "${PART1_PATH}/cmdline.yml" ]; then
+    GETCMDLINE=$(cat "${PART1_PATH}/cmdline.yml")
+    dialog --backtitle "$(backtitle)" --title "Sysinfo Cmdline" --msgbox "${GETCMDLINE}" 10 100
+  else
+    dialog --backtitle "$(backtitle)" --title "Sysinfo Cmdline" --msgbox "Cmdline File found!" 0 0
+  fi
+  return
+}
+
+function uploadDiag () {
+  if [ -f "${TMP_PATH}/diag" ]; then
+    GENHASH=$(cat "${TMP_PATH}/diag" | curl -s -F "content=<-" http://dpaste.com/api/v2/ | cut -c 19-)
+    dialog --backtitle "$(backtitle)" --title "Sysinfo Upload" --msgbox "Your Code: ${GENHASH}" 5 30
+  else
+    dialog --backtitle "$(backtitle)" --title "Sysinfo Upload" --msgbox "No Diag File found!" 0 0
+  fi
   return
 }
 
@@ -1244,13 +1392,17 @@ function sysinfo() {
 # Shows Networkdiag to user
 function networkdiag() {
   (
-  ETHX=$(ls /sys/class/net/ 2>/dev/null | grep eth) # real network cards list
+  ETHX="$(ls /sys/class/net/ 2>/dev/null | grep eth)"
   for ETH in ${ETHX}; do
     echo
     DRIVER=$(ls -ld /sys/class/net/${ETH}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')
     echo -e "Interface: ${ETH} (${DRIVER})"
     if ethtool ${ETH} 2>/dev/null | grep 'Link detected' | grep -q 'no'; then
       echo -e "Link: NOT CONNECTED"
+      continue
+    fi
+    if ! ip link show ${ETH} 2>/dev/null | grep -q 'UP'; then
+      echo -e "Link: DOWN"
       continue
     fi
     echo -e "Link: CONNECTED"
@@ -1296,13 +1448,14 @@ function networkdiag() {
 }
 
 ###############################################################################
-# Shows Systeminfo to user
+# Shows Credits to user
 function credits() {
   # Print Credits Informations
   TEXT=""
   TEXT+="\n\Z4> Arc Loader:\Zn"
   TEXT+="\n  Github: \Zbhttps://github.com/AuxXxilium\Zn"
   TEXT+="\n  Website: \Zbhttps://auxxxilium.tech\Zn"
+  TEXT+="\n  Wiki: \Zbhttps://auxxxilium.tech/wiki\Zn"
   TEXT+="\n"
   TEXT+="\n\Z4>> Developer:\Zn"
   TEXT+="\n   Arc Loader: \ZbAuxXxilium / Fulcrum\Zn"
@@ -1310,15 +1463,14 @@ function credits() {
   TEXT+="\n\Z4>> Based on:\Zn"
   TEXT+="\n   Redpill: \ZbTTG / Pocopico\Zn"
   TEXT+="\n   ARPL/RR: \Zbfbelavenuto / wjz304\Zn"
-  TEXT+="\n   NVMe System: \Zbjim3ma\Zn"
-  TEXT+="\n   System: \ZbBuildroot 2023.08.x\Zn"
+  TEXT+="\n   System: \ZbBuildroot 2024.02.x\Zn"
   TEXT+="\n   DSM: \ZbSynology Inc.\Zn"
   TEXT+="\n"
   TEXT+="\n\Z4>> Note:\Zn"
-  TEXT+="\n   Arc and all Parts are OpenSource."
+  TEXT+="\n   Arc and all Parts of it are OpenSource."
   TEXT+="\n   Commercial use is not permitted!"
   TEXT+="\n   This Loader is FREE and it is forbidden"
-  TEXT+="\n   to sell Arc or Parts of this."
+  TEXT+="\n   to sell Arc or Parts of it."
   TEXT+="\n"
   dialog --backtitle "$(backtitle)" --colors --title "Credits" \
     --msgbox "${TEXT}" 0 0
@@ -1328,77 +1480,55 @@ function credits() {
 ###############################################################################
 # allow setting Static IP for Loader
 function staticIPMenu() {
-  # Get Amount of NIC
-  ETHX=$(ls /sys/class/net/ 2>/dev/null | grep eth) || true
+  ETHX="$(ls /sys/class/net/ 2>/dev/null | grep eth)"
   for ETH in ${ETHX}; do
-    STATIC="$(readConfigKey "static.${ETH}" "${USER_CONFIG_FILE}")"
-    DRIVER=$(ls -ld /sys/class/net/${ETH}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')
-    TEXT=""
-    TEXT+="This Feature allow you to set a StaticIP for the Loader.\n"
-    TEXT+="Actual Settings are:\n"
-    TEXT+="\nNIC: ${ETH} (${DRIVER})\n"
-    TEXT+="StaticIP: ${STATIC}\n"
-    if [ "${STATIC}" == "true" ]; then
-      IPADDR="$(readConfigKey "ip.${ETH}" "${USER_CONFIG_FILE}")"
-      NETMASK="$(readConfigKey "netmask.${ETH}" "${USER_CONFIG_FILE}")"
-      GATEWAY="$(readConfigKey "gateway.${ETH}" "${USER_CONFIG_FILE}")"
-      NAMESERVER="$(readConfigKey "nameserver.${ETH}" "${USER_CONFIG_FILE}")"
-      TEXT+="IP: ${IPADDR}\n"
-      TEXT+="NETMASK: ${NETMASK}\n"
-      TEXT+="GATEWAY: ${GATEWAY}\n"
-      TEXT+="NAMESERVER: ${NAMESERVER}\n"
-    else
-      IPADDR=""
-      NETMASK=""
-      GATEWAY=""
-      NAMESERVER=""
-    fi
-    TEXT+=""
-    TEXT+="Do you want to change Config?"
-    dialog --backtitle "$(backtitle)" --title "DHCP/StaticIP" \
-        --yesno "${TEXT}" 0 0
-    [ $? -ne 0 ] && return 1
-    dialog --clear --backtitle "$(backtitle)" --title "DHCP/StaticIP" \
-      --menu "DHCP or STATIC?" 0 0 0 \
-        1 "DHCP" \
-        2 "STATIC" \
-      2>"${TMP_PATH}/opts"
-    opts=$(cat ${TMP_PATH}/opts)
-    [ -z "${opts}" ] && return 1
-    if [ ${opts} -eq 1 ]; then
-      writeConfigKey "static.${ETH}" "false" "${USER_CONFIG_FILE}"
-      /etc/init.d/S41dhcpcd restart >/dev/null 2>&1 || true
-    elif [ ${opts} -eq 2 ]; then
-      dialog --backtitle "$(backtitle)" --title "DHCP/StaticIP" \
-        --inputbox "Type a Static IP\nLike: 192.168.0.2" 0 0 "${IPADDR}" \
+    MACR="$(cat /sys/class/net/${ETH}/address 2>/dev/null | sed 's/://g')"
+    IPR="$(readConfigKey "network.${MACR}" "${USER_CONFIG_FILE}")"
+    IFS='/' read -r -a IPRA <<<"$IPR"
+
+    MSG="$(printf "Set to %s: (Delete if empty)" "${ETH}(${MACR})")"
+    while true; do
+      dialog --backtitle "$(backtitle)" --title "StaticIP" \
+        --form "${MSG}" 10 60 4 "address" 1 1 "${IPRA[0]}" 1 9 36 16 "netmask" 2 1 "${IPRA[1]}" 2 9 36 16 "gateway" 3 1 "${IPRA[2]}" 3 9 36 16 "dns" 4 1 "${IPRA[3]}" 4 9 36 16 \
         2>"${TMP_PATH}/resp"
-      [ $? -ne 0 ] && return 1
-      IPADDR=$(cat "${TMP_PATH}/resp")
-      dialog --backtitle "$(backtitle)" --title "DHCP/StaticIP" \
-        --inputbox "Type a Netmask\nLike: 24" 0 0 "${NETMASK}" \
-        2>"${TMP_PATH}/resp"
-      [ $? -ne 0 ] && return 1
-      NETMASK=$(cat "${TMP_PATH}/resp")
-      dialog --backtitle "$(backtitle)" --title "DHCP/StaticIP" \
-        --inputbox "Type a Gateway\nLike: 192.168.0.1" 0 0 "${GATEWAY}" \
-        2>"${TMP_PATH}/resp"
-      [ $? -ne 0 ] && return 1
-      GATEWAY=$(cat "${TMP_PATH}/resp")
-      writeConfigKey "ip.${ETH}" "${IPADDR}" "${USER_CONFIG_FILE}"
-      writeConfigKey "netmask.${ETH}" "${NETMASK}" "${USER_CONFIG_FILE}"
-      writeConfigKey "gateway.${ETH}" "${GATEWAY}" "${USER_CONFIG_FILE}"
-      writeConfigKey "static.${ETH}" "true" "${USER_CONFIG_FILE}"
-      #NETMASK=$(convert_netmask "${NETMASK}")
-      /etc/init.d/S41dhcpcd stop >/dev/null 2>&1 || true
-      ip addr add ${IPADDR}/${NETMASK} dev ${ETH}
-      ip route add default via ${GATEWAY} dev ${ETH}
-      /etc/init.d/S40network restart
-      IP="${IPADDR}"
-    fi
+      RET=$?
+      case ${RET} in
+      0) # ok-button
+        dialog --backtitle "$(backtitle)" --title "StaticIP" \
+          --infobox "Setting IP ..." 0 0
+        address="$(cat "${TMP_PATH}/resp" | sed -n '1p')"
+        netmask="$(cat "${TMP_PATH}/resp" | sed -n '2p')"
+        gateway="$(cat "${TMP_PATH}/resp" | sed -n '3p')"
+        dnsname="$(cat "${TMP_PATH}/resp" | sed -n '4p')"
+        if [ -z "${address}" ]; then
+          deleteConfigKey "network.${MACR}" "${USER_CONFIG_FILE}"
+        else
+          ip addr flush dev $ETH
+          ip addr add ${address}/${netmask:-"255.255.255.0"} dev $ETH
+          if [ -n "${gateway}" ]; then
+            ip route add default via ${gateway} dev $ETH
+          fi
+          if [ -n "${dnsname:-${gateway}}" ]; then
+            sed -i "/nameserver ${dnsname:-${gateway}}/d" /etc/resolv.conf
+            echo "nameserver ${dnsname:-${gateway}}" >>/etc/resolv.conf
+          fi
+          writeConfigKey "network.${MACR}" "${address}/${netmask}/${gateway}/${dnsname}" "${USER_CONFIG_FILE}"
+          IP="$(getIP)"
+          sleep 1
+        fi
+        writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+        BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+        break
+        ;;
+      1) # cancel-button
+        break
+        ;;
+      255) # ESC
+        break 2
+        ;;
+      esac
+    done
   done
-  dialog --backtitle "$(backtitle)" --title "DHCP/StaticIP" \
-    --msgbox "Settings written and enabled.\nThis will be not applied to DSM." 5 50
-  return
 }
 
 ###############################################################################
@@ -1526,8 +1656,8 @@ function addNewDSMUser() {
   (
     ONBOOTUP=""
     ONBOOTUP="${ONBOOTUP}if synouser --enum local | grep -q ^${username}\$; then synouser --setpw ${username} ${password}; else synouser --add ${username} ${password} arc 0 user@arc.arc 1; fi\n"
-    ONBOOTUP="${ONBOOTUP}synogroup --member administrators ${username}\n"
-    ONBOOTUP="${ONBOOTUP}echo \"DELETE FROM task WHERE task_name LIKE ''ARCONBOOTUPRR_ADDUSER'';\" | sqlite3 /usr/syno/etc/esynoscheduler/esynoscheduler.db\n"
+    ONBOOTUP="${ONBOOTUP}synogroup --memberadd administrators ${username}\n"
+    ONBOOTUP="${ONBOOTUP}echo \"DELETE FROM task WHERE task_name LIKE ''ARCONBOOTUPARC_ADDUSER'';\" | sqlite3 /usr/syno/etc/esynoscheduler/esynoscheduler.db\n"
 
     mkdir -p "${TMP_PATH}/mdX"
     for I in ${DSMROOTS}; do
@@ -1535,8 +1665,8 @@ function addNewDSMUser() {
       [ $? -ne 0 ] && continue
       if [ -f "${TMP_PATH}/mdX/usr/syno/etc/esynoscheduler/esynoscheduler.db" ]; then
         sqlite3 ${TMP_PATH}/mdX/usr/syno/etc/esynoscheduler/esynoscheduler.db <<EOF
-DELETE FROM task WHERE task_name LIKE 'ARCONBOOTUPRR_ADDUSER';
-INSERT INTO task VALUES('ARCONBOOTUPRR_ADDUSER', '', 'bootup', '', 1, 0, 0, 0, '', 0, '$(echo -e ${ONBOOTUP})', 'script', '{}', '', '', '{}', '{}');
+DELETE FROM task WHERE task_name LIKE 'ARCONBOOTUPARC_ADDUSER';
+INSERT INTO task VALUES('ARCONBOOTUPARC_ADDUSER', '', 'bootup', '', 1, 0, 0, 0, '', 0, '$(echo -e ${ONBOOTUP})', 'script', '{}', '', '', '{}', '{}');
 EOF
         sleep 1
         sync
@@ -1563,7 +1693,7 @@ function bootipwaittime() {
   resp=$(cat ${TMP_PATH}/resp)
   [ -z "${resp}" ] && return 1
   BOOTIPWAIT=${resp}
-  writeConfigKey "arc.bootipwait" "${BOOTIPWAIT}" "${USER_CONFIG_FILE}"
+  writeConfigKey "bootipwait" "${BOOTIPWAIT}" "${USER_CONFIG_FILE}"
 }
 
 ###############################################################################
@@ -1588,50 +1718,48 @@ function saveMenu() {
 
 ###############################################################################
 # let user format disks from inside arc
-function formatdisks() {
-  rm -f "${TMP_PATH}/opts" >/dev/null
-  while read KNAME SIZE PKNAME; do
+function formatDisks() {
+  rm -f "${TMP_PATH}/opts"
+  while read -r KNAME SIZE TYPE PKNAME; do
     [ -z "${KNAME}" ] && continue
+    [ "${KNAME}" = "N/A" ] && continue
     [[ "${KNAME}" = /dev/md* ]] && continue
-    [[ "${KNAME}" == "${LOADER_DISK}" || "${PKNAME}" == "${LOADER_DISK}" ]] && continue
-    [ -n "${PKNAME}" ] && PARTITION=" (Partition)" || PARTITION=" (Disk)"
+    [[ "${KNAME}" = "${LOADER_DISK}" || "${PKNAME}" = "${LOADER_DISK}" ]] && continue
     [ -z "${SIZE}" ] && SIZE="Unknown"
-    echo "\"${KNAME}\" \"${SIZE}${PARTITION}\" \"off\"" >>"${TMP_PATH}/opts"
-  done < <(lsblk -pno KNAME,SIZE,PKNAME)
+    printf "\"%s\" \"%-6s %-4s %s\" \"off\"\n" "${KNAME}" "${SIZE}" "${TYPE}" >>"${TMP_PATH}/opts"
+  done < <(lsblk -Jpno KNAME,SIZE,TYPE,PKNAME 2>/dev/null | sed 's|null|"N/A"|g' | jq -r '.blockdevices[] | "\(.kname) \(.size) \(.type) \(.pkname)"' 2>/dev/null)
   if [ ! -f "${TMP_PATH}/opts" ]; then
-    dialog --backtitle "$(backtitle)" --colors --title "Format Disks" \
+    dialog --backtitle "$(backtitle)" --title "Format Disks" \
       --msgbox "No disk found!" 0 0
-    return 1
+    return
   fi
-  dialog --backtitle "$(backtitle)" --colors --title "Format Disks" \
-    --checklist "Select Disk(s)" 0 0 0 --file "${TMP_PATH}/opts" \
+  dialog --backtitle "$(backtitle)" --title "Format Disks" \
+    --checklist "Select Disks" 0 0 0 --file "${TMP_PATH}/opts" \
     2>${TMP_PATH}/resp
   [ $? -ne 0 ] && return
-  resp=$(cat ${TMP_PATH}/resp)
-  [ -z "${resp}" ] && return
-  dialog --backtitle "$(backtitle)" --colors --title "Format Disks" \
+  RESP=$(cat "${TMP_PATH}/resp")
+  [ -z "${RESP}" ] && return
+  dialog --backtitle "$(backtitle)" --title "Format Disks" \
     --yesno "Warning:\nThis operation is irreversible. Please backup important data. Do you want to continue?" 0 0
   [ $? -ne 0 ] && return
   if [ $(ls /dev/md[0-9]* 2>/dev/null | wc -l) -gt 0 ]; then
-    dialog --backtitle "$(backtitle)" --colors --title "Format Disks" \
-      --yesno "Warning:\nThe current HDD(s) are in Raid, do you still want to format them?" 0 0
+    dialog --backtitle "$(backtitle)" --title "Format Disks" \
+      --yesno "Warning:\nThe current hds is in raid, do you still want to format them?" 0 0
     [ $? -ne 0 ] && return
     for I in $(ls /dev/md[0-9]* 2>/dev/null); do
-      mdadm -S "${I}"
+      mdadm -S "${I}" >/dev/null 2>&1
     done
   fi
-  (
-    for I in ${resp}; do
-      if [[ "${I}" = /dev/mmc* ]]; then
-        echo y | mkfs.ext4 -T largefile4 -E nodiscard "${I}"
-      else
-        echo y | mkfs.ext4 -T largefile4 "${I}"
-      fi
-    done
-  ) 2>&1 | dialog --backtitle "$(backtitle)" --colors --title "Format Disks" \
+  for I in ${RESP}; do
+    if [[ "${I}" = /dev/mmc* ]]; then
+      echo y | mkfs.ext4 -T largefile4 -E nodiscard "${I}"
+    else
+      echo y | mkfs.ext4 -T largefile4 "${I}"
+    fi
+  done 2>&1 | dialog --backtitle "$(backtitle)" --title "Format Disks" \
     --progressbox "Formatting ..." 20 100
-  dialog --backtitle "$(backtitle)" --colors --title "Format Disks" \
-    --msgbox "Formatting is complete." 5 30
+  dialog --backtitle "$(backtitle)" --title "Format Disks" \
+    --msgbox "Formatting is complete." 0 0
   return
 }
 
@@ -1663,6 +1791,7 @@ function forcessh() {
   fi
   (
     ONBOOTUP=""
+    ONBOOTUP="${ONBOOTUP}systemctl restart inetd\n"
     ONBOOTUP="${ONBOOTUP}synowebapi --exec api=SYNO.Core.Terminal method=set version=3 enable_telnet=true enable_ssh=true ssh_port=22 forbid_console=false\n"
     ONBOOTUP="${ONBOOTUP}echo \"DELETE FROM task WHERE task_name LIKE ''ARCONBOOTUPARC_SSH'';\" | sqlite3 /usr/syno/etc/esynoscheduler/esynoscheduler.db\n"
     mkdir -p "${TMP_PATH}/mdX"
@@ -1693,12 +1822,15 @@ EOF
 # Clone Loader Disk
 function cloneLoader() {
   rm -f "${TMP_PATH}/opts" >/dev/null
-  while read -r KNAME KMODEL PKNAME TYPE; do
+  while read -r KNAME SIZE TYPE PKNAME; do
     [ -z "${KNAME}" ] && continue
-    [ -z "${KMODEL}" ] && KMODEL="${TYPE}"
-    [ "${KNAME}" == "${LOADER_DISK}" ] || [ "${PKNAME}" == "${LOADER_DISK}" ] || [ "${KMODEL}" == "${LOADER_DISK}" ] && continue
-    echo "\"${KNAME}\" \"${KMODEL}\" \"off\"" >>"${TMP_PATH}/opts"
-  done < <(lsblk -dpno KNAME,MODEL,PKNAME,TYPE | sort)
+    [ "${KNAME}" = "N/A" ] && continue
+    [ "${TYPE}" != "disk" ] && continue
+    [[ "${KNAME}" = /dev/md* ]] && continue
+    [[ "${KNAME}" = "${LOADER_DISK}" || "${PKNAME}" = "${LOADER_DISK}" ]] && continue
+    [ -z "${SIZE}" ] && SIZE="Unknown"
+    printf "\"%s\" \"%-6s %-4s %s\" \"off\"\n" "${KNAME}" "${SIZE}" "${TYPE}" >>"${TMP_PATH}/opts"
+  done < <(lsblk -Jpno KNAME,SIZE,TYPE,PKNAME 2>/dev/null | sed 's|null|"N/A"|g' | jq -r '.blockdevices[] | "\(.kname) \(.size) \(.type) \(.pkname)"' 2>/dev/null)
   if [ ! -f "${TMP_PATH}/opts" ]; then
     dialog --backtitle "$(backtitle)" --colors --title "Clone Loader" \
       --msgbox "No disk found!" 0 0
@@ -1768,13 +1900,12 @@ function resetLoader() {
     # Clean old files
     rm -f "${ORI_ZIMAGE_FILE}" "${ORI_RDGZ_FILE}" "${MOD_ZIMAGE_FILE}" "${MOD_RDGZ_FILE}" >/dev/null
   fi
-  writeConfigKey "arc.key" "" "${USER_CONFIG_FILE}"
   [ -d "${UNTAR_PAT_PATH}" ] && rm -rf "${UNTAR_PAT_PATH}" >/dev/null
   [ -f "${USER_CONFIG_FILE}" ] && rm -f "${USER_CONFIG_FILE}" >/dev/null
     dialog --backtitle "$(backtitle)" --title "Reset Loader" --aspect 18 \
-    --yesno "Reset successful.\nReboot required!" 0 0
+    --yesno "Reset successful.\nReinit required!" 0 0
   [ $? -ne 0 ] && return
-  exec reboot
+  init.sh
 }
 
 ###############################################################################
@@ -1793,29 +1924,71 @@ function editGrubCfg() {
 ###############################################################################
 # Grep Logs from dbgutils
 function greplogs() {
+  rm -rf "${TMP_PATH}/logs" "${TMP_PATH}/logs.tar.gz"
+  MSG=""
+  SYSLOG=0
+  DSMROOTS="$(findDSMRoot)"
+  if [ -n "${DSMROOTS}" ]; then
+    mkdir -p "${TMP_PATH}/mdX"
+    for I in ${DSMROOTS}; do
+      mount -t ext4 "${I}" "${TMP_PATH}/mdX"
+      [ $? -ne 0 ] && continue
+      mkdir -p "${TMP_PATH}/logs/md0/log"
+      cp -rf ${TMP_PATH}/mdX/.log.junior "${TMP_PATH}/logs/md0"
+      cp -rf ${TMP_PATH}/mdX/var/log/messages ${TMP_PATH}/mdX/var/log/*.log "${TMP_PATH}/logs/md0/log"
+      SYSLOG=1
+      umount "${TMP_PATH}/mdX"
+    done
+    rm -rf "${TMP_PATH}/mdX"
+  fi
+  if [ ${SYSLOG} -eq 1 ]; then
+    MSG+="System logs found!\n"
+  else
+    MSG+="Can't find system logs!\n"
+  fi
+
+  PSTORE=0
+  if [ -n "$(ls /sys/fs/pstore 2>/dev/null)" ]; then
+    mkdir -p "${TMP_PATH}/logs/pstore"
+    cp -rf /sys/fs/pstore/* "${TMP_PATH}/logs/pstore"
+    [ -n "$(ls /sys/fs/pstore/*.z 2>/dev/null)" ] && zlib-flate -uncompress </sys/fs/pstore/*.z >"${TMP_PATH}/logs/pstore/ps.log" 2>/dev/null
+    PSTORE=1
+  fi
+  if [ ${PSTORE} -eq 1 ]; then
+    MSG+="Pstore logs found!\n"
+  else
+    MSG+="Can't find pstore logs!\n"
+  fi
+
+  ADDONS=0
   if [ -d "${PART1_PATH}/logs" ]; then
-    rm -f "${TMP_PATH}/logs.tar.gz"
-    tar -czf "${TMP_PATH}/logs.tar.gz" -C "${PART1_PATH}" logs
+    mkdir -p "${TMP_PATH}/logs/addons"
+    cp -rf "${PART1_PATH}/logs"/* "${TMP_PATH}/logs/addons"
+    ADDONS=1
+  fi
+  if [ ${ADDONS} -eq 1 ]; then
+    MSG+="Addons logs found!\n"
+  else
+    MSG+="Can't find Addon logs!\n"
+    MSG+="Please do as follows:\n"
+    MSG+="1. Add dbgutils in addons and rebuild.\n"
+    MSG+="2. Wait 10 minutes after booting.\n"
+    MSG+="3. Reboot into Arc and go to this option.\n"
+  fi
+
+  if [ -n "$(ls -A ${TMP_PATH}/logs 2>/dev/null)" ]; then
+    tar -czf "${TMP_PATH}/logs.tar.gz" -C "${TMP_PATH}" logs
     if [ -z "${SSH_TTY}" ]; then # web
       mv -f "${TMP_PATH}/logs.tar.gz" "/var/www/data/logs.tar.gz"
       URL="http://$(getIP)/logs.tar.gz"
-      dialog --backtitle "$(backtitle)" --colors --title "Grep Logs" \
-        --msgbox "Please visit ${URL}\nto download the logs and unzip it and back it up in order by file name." 0 0
+      MSG+="Please via ${URL} to download the logs,\nAnd go to Github or Discord to create an issue and upload the logs."
     else
-      sz -be -B 536870912 "${TMP_PATH}/log.tar.gz"
-      dialog --backtitle "$(backtitle)" --colors --title "Grep Logs" \
-        --msgbox "Please unzip it and back it up in order by file name." 0 0
+      sz -be -B 536870912 "${TMP_PATH}/logs.tar.gz"
+      MSG+="Please go to Github or Discord to create an issue and upload the logs."
     fi
-  else
-    MSG=""
-    MSG+="\Z1No log found!\Zn\n\n"
-    MSG+="Please do as follows:\n"
-    MSG+=" 1. Add dbgutils in Addons and rebuild.\n"
-    MSG+=" 2. Boot to DSM.\n"
-    MSG+=" 3. Reboot to Config Mode and use this Option.\n"
-    dialog --backtitle "$(backtitle)" --colors --title "Grep Logs" \
-      --msgbox "${MSG}" 0 0
   fi
+  dialog --backtitle "$(backtitle)" --colors --title "Grep Logs" \
+    --msgbox "${MSG}" 0 0
   return
 }
 
@@ -1872,35 +2045,74 @@ function satadomMenu() {
 ###############################################################################
 # Decrypt Menu
 function decryptMenu() {
-  if [ -f "${S_FILE_ENC}" ]; then
-    CONFIGSVERSION=$(cat "${MODEL_CONFIG_PATH}/VERSION")
-    dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
-      --inputbox "Enter Decryption Key for ${CONFIGSVERSION}" 7 40 2>"${TMP_PATH}/resp"
-    [ $? -ne 0 ] && return
-    ARC_KEY=$(cat "${TMP_PATH}/resp")
-    if [ -n "${ARC_KEY}" ]; then
+  OFFLINE="$(readConfigKey "arc.offline" "${USER_CONFIG_FILE}")"
+  if [ "${OFFLINE}" = "false" ]; then
+    local TAG="$(curl -m 10 -skL "https://api.github.com/repos/AuxXxilium/arc-configs/releases" | jq -r ".[].tag_name" | sort -rV | head -1)"
+    if [ -n "${TAG}" ]; then
+      (
+        # Download update file
+        local URL="https://github.com/AuxXxilium/arc-configs/releases/download/${TAG}/arc-configs.zip"
+        echo "Downloading ${TAG}"
+        if [ "${ARCNIC}" == "auto" ]; then
+          curl -#kL "${URL}" -o "${TMP_PATH}/configs.zip" 2>&1 | while IFS= read -r -n1 char; do
+            [[ $char =~ [0-9] ]] && keep=1 ;
+            [[ $char == % ]] && echo "Download: $progress%" && progress="" && keep=0 ;
+            [[ $keep == 1 ]] && progress="$progress$char" ;
+          done
+        else
+          curl --interface ${ARCNIC} -#kL "${URL}" -o "${TMP_PATH}/configs.zip" 2>&1 | while IFS= read -r -n1 char; do
+            [[ $char =~ [0-9] ]] && keep=1 ;
+            [[ $char == % ]] && echo "Download: $progress%" && progress="" && keep=0 ;
+            [[ $keep == 1 ]] && progress="$progress$char" ;
+          done
+        fi
+        if [ -f "${TMP_PATH}/configs.zip" ]; then
+          echo "Download successful!"
+          rm -rf "${MODEL_CONFIG_PATH}"
+          mkdir -p "${MODEL_CONFIG_PATH}"
+          echo "Installing new Configs..."
+          unzip -oq "${TMP_PATH}/configs.zip" -d "${MODEL_CONFIG_PATH}"
+          rm -f "${TMP_PATH}/configs.zip"
+          echo "Installation done!"
+          sleep 2
+        else
+          echo "Error extracting new Version!"
+          sleep 5
+        fi
+      ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Arc Decrypt" \
+        --progressbox "Installing Arc Patch Configs..." 20 70
+    else
+      dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
+        --msgbox "Can't connect to Github.\nCheck your Network!" 6 50
+      return
+    fi
+    if [ -f "${S_FILE_ENC}" ]; then
+      CONFIGSVERSION="$(cat "${MODEL_CONFIG_PATH}/VERSION")"
+      cp -f "${S_FILE}" "${S_FILE}.bak"
+      dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
+        --inputbox "Enter Decryption Key for ${CONFIGSVERSION}\nKey is available in my Discord." 8 40 2>"${TMP_PATH}/resp"
+      [ $? -ne 0 ] && return
+      ARC_KEY=$(cat "${TMP_PATH}/resp" | tr '[:lower:]' '[:upper:]')
       if openssl enc -in "${S_FILE_ENC}" -out "${S_FILE_ARC}" -d -aes-256-cbc -k "${ARC_KEY}" 2>/dev/null; then
         dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
           --msgbox "Decrypt successful: You can use Arc Patch." 5 50
-        mv -f "${S_FILE}" "${S_FILE}.bak"
-        mv -f "${S_FILE_ARC}" "${S_FILE}"
+        cp -f "${S_FILE_ARC}" "${S_FILE}"
         writeConfigKey "arc.key" "${ARC_KEY}" "${USER_CONFIG_FILE}"
       else
-        mv -f "${S_FILE}.bak" "${S_FILE}"
+        cp -f "${S_FILE}.bak" "${S_FILE}"
         dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
           --msgbox "Decrypt failed: Wrong Key for this Version." 5 50
         writeConfigKey "arc.key" "" "${USER_CONFIG_FILE}"
       fi
-    else
-      dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
-        --msgbox "Decrypt failed: Please enter a Key." 5 50
-      writeConfigKey "arc.key" "" "${USER_CONFIG_FILE}"
     fi
-  fi
-  ARC_KEY="$(readConfigKey "arc.key" "${USER_CONFIG_FILE}")"
-  MODEL="$(readConfigKey "model" "${USER_CONFIG_FILE}")"
-  if [ -n "${MODEL}" ]; then
-    ARCCONF="$(readConfigKey "${MODEL}.serial" "${S_FILE}" 2>/dev/null)"
+    writeConfigKey "arc.confdone" "false" "${USER_CONFIG_FILE}"
+    CONFDONE="$(readConfigKey "arc.confdone" "${USER_CONFIG_FILE}")"
+    writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+    BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+    ARC_KEY="$(readConfigKey "arc.key" "${USER_CONFIG_FILE}")"
+  else
+    dialog --backtitle "$(backtitle)" --colors --title "Arc Decrypt" \
+      --msgbox "Not available in offline Mode!" 5 50
   fi
   return
 }
@@ -1908,10 +2120,12 @@ function decryptMenu() {
 ###############################################################################
 # ArcNIC Menu
 function arcNIC () {
+  ARCNIC="$(readConfigKey "arc.nic" "${USER_CONFIG_FILE}")"
+  ETHX="$(ls /sys/class/net/ 2>/dev/null | grep eth)" # real network cards list
   rm -f "${TMP_PATH}/opts" >/dev/null
   touch "${TMP_PATH}/opts"
-  ETHX="$(ls /sys/class/net/ 2>/dev/null | grep eth)" # real network cards list
-  # Get actual IP
+  echo -e "auto \"Automated\"" >>"${TMP_PATH}/opts"
+  # Get NICs
   for ETH in ${ETHX}; do
     DRIVER="$(ls -ld /sys/class/net/${ETH}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')"
     echo -e "${ETH} \"${DRIVER}\"" >>"${TMP_PATH}/opts"
@@ -1928,6 +2142,83 @@ function arcNIC () {
 }
 
 ###############################################################################
+# Reboot Menu
+function rebootMenu() {
+  rm -f "${TMP_PATH}/opts" >/dev/null
+  touch "${TMP_PATH}/opts"
+  # Selectable Reboot Options
+  echo -e "config \"Arc: Config Mode\"" >>"${TMP_PATH}/opts"
+  echo -e "update \"Arc: Automated Update Mode\"" >>"${TMP_PATH}/opts"
+  echo -e "init \"Arc: Restart Loader Init\"" >>"${TMP_PATH}/opts"
+  echo -e "network \"Arc: Restart Network Service\"" >>"${TMP_PATH}/opts"
+  echo -e "recovery \"DSM: Recovery Mode\"" >>"${TMP_PATH}/opts"
+  echo -e "junior \"DSM: Reinstall Mode\"" >>"${TMP_PATH}/opts"
+  echo -e "bios \"System: BIOS/UEFI\"" >>"${TMP_PATH}/opts"
+  echo -e "poweroff \"System: Shutdown\"" >>"${TMP_PATH}/opts"
+  echo -e "shell \"System: Shell Cmdline\"" >>"${TMP_PATH}/opts"
+  dialog --backtitle "$(backtitle)" --title "Power Menu" \
+    --menu  "Choose a Destination" 0 0 0 --file "${TMP_PATH}/opts" \
+    2>${TMP_PATH}/resp
+  [ $? -ne 0 ] && return
+  resp=$(cat ${TMP_PATH}/resp)
+  [ -z "${resp}" ] && return
+  REDEST=${resp}
+  dialog --backtitle "$(backtitle)" --title "Power Menu" \
+    --infobox "${REDEST} selected ...!" 5 30
+  if [ "${REDEST}" == "poweroff" ]; then
+    poweroff
+    exit 0
+  elif [ "${REDEST}" == "shell" ]; then
+    clear
+    exit 0
+  elif [ "${REDEST}" == "init" ]; then
+    clear
+    init.sh
+  elif [ "${REDEST}" == "network" ]; then
+    clear
+    /etc/init.d/S41dhcpcd restart
+    arc.sh
+  else
+    rebootTo ${REDEST}
+    exit 0
+  fi
+  return
+}
+
+###############################################################################
+# Reset DSM Network
+function resetDSMNetwork {
+  MSG=""
+  MSG+="This option will clear all customized settings of the network card and restore them to the default state.\n"
+  MSG+="Warning:\nThis operation is irreversible. Please backup important data. Do you want to continue?"
+  dialog --backtitle "$(backtitle)" --title "Reset DSM Network" \
+    --yesno "${MSG}" 0 0
+  [ $? -ne 0 ] && return
+  DSMROOTS="$(findDSMRoot)"
+  if [ -z "${DSMROOTS}" ]; then
+    dialog --backtitle "$(backtitle)" --title "Reset DSM Network" \
+      --msgbox "No DSM system partition(md0) found!\nPlease insert all disks before continuing." 0 0
+    return
+  fi
+  (
+    mkdir -p "${TMP_PATH}/mdX"
+    for I in ${DSMROOTS}; do
+      mount -t ext4 "${I}" "${TMP_PATH}/mdX"
+      [ $? -ne 0 ] && continue
+      rm -f "${TMP_PATH}/mdX/etc.defaults/sysconfig/network-scripts/ifcfg-bond"* "${TMP_PATH}/mdX/etc.defaults/sysconfig/network-scripts/ifcfg-eth"*
+      sync
+      umount "${TMP_PATH}/mdX"
+    done
+    rm -rf "${TMP_PATH}/mdX"
+  ) 2>&1 | dialog --backtitle "$(backtitle)" --title "Reset DSM Network" \
+    --progressbox "Resetting ..." 20 100
+  MSG="The network settings have been resetted."
+  dialog --backtitle "$(backtitle)" --title "Reset DSM Network" \
+    --msgbox "${MSG}" 0 0
+  return
+}
+
+###############################################################################
 # CPU Governor Menu
 function governorMenu () {
   governorSelection
@@ -1939,25 +2230,120 @@ function governorMenu () {
 function governorSelection () {
   rm -f "${TMP_PATH}/opts" >/dev/null
   touch "${TMP_PATH}/opts"
-  CPUFREQSUPPORT=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
-  if [ -n "${CPUFREQSUPPORT}" ]; then
+  if [ "${AUTOMATED}" == "false" ]; then
     # Selectable CPU governors
-    echo -e "performance \"always run at max frequency\"" >>"${TMP_PATH}/opts"
-    [ "${PLATFORM}" == "epyc7002" ] && echo -e "schedutil \"use schedutil to scale frequency\"" >>"${TMP_PATH}/opts"
+    [ "${PLATFORM}" == "epyc7002" ] && echo -e "schedutil \"use schedutil to scale frequency *\"" >>"${TMP_PATH}/opts"
+    [ "${PLATFORM}" != "epyc7002" ] && echo -e "ondemand \"use ondemand to scale frequency *\"" >>"${TMP_PATH}/opts"
     [ "${PLATFORM}" != "epyc7002" ] && echo -e "conservative \"use conservative to scale frequency\"" >>"${TMP_PATH}/opts"
-    [ "${PLATFORM}" != "epyc7002" ] && echo -e "ondemand \"use ondemand to scale frequency\"" >>"${TMP_PATH}/opts"
+    echo -e "performance \"always run at max frequency\"" >>"${TMP_PATH}/opts"
+    echo -e "powersave \"always run at lowest frequency\"" >>"${TMP_PATH}/opts"
     echo -e "userspace \"use userspace settings to scale frequency\"" >>"${TMP_PATH}/opts"
-    dialog --backtitle "$(backtitle)" --title "DSM Frequency Scaling" \
-      --default-item "performance" --menu  "Choose a Governor" 0 0 0 --file "${TMP_PATH}/opts" \
+    dialog --backtitle "$(backtitle)" --title "CPU Frequency Scaling" \
+      --menu  "Choose a Governor\n* Recommended Option" 0 0 0 --file "${TMP_PATH}/opts" \
       2>${TMP_PATH}/resp
     [ $? -ne 0 ] && return
     resp=$(cat ${TMP_PATH}/resp)
     [ -z "${resp}" ] && return
     CPUGOVERNOR=${resp}
   else
-    dialog --backtitle "$(backtitle)" --title "DSM Frequency Scaling" \
-      --msgbox "CPU frequency scaling not supported!" 0 0
-    CPUGOVERNOR="performance"
+    [ "${PLATFORM}" == "epyc7002" ] && CPUGOVERNOR="schedutil"
+    [ "${PLATFORM}" != "epyc7002" ] && CPUGOVERNOR="ondemand"
   fi
-  writeConfigKey "arc.governor" "${CPUGOVERNOR}" "${USER_CONFIG_FILE}"
+  writeConfigKey "governor" "${CPUGOVERNOR}" "${USER_CONFIG_FILE}"
+}
+
+###############################################################################
+# Where the magic happens!
+function dtsMenu() {
+  # Loop menu
+  while true; do
+    [ -f "${USER_UP_PATH}/${MODEL}.dts" ] && CUSTOMDTS="Yes" || CUSTOMDTS="No"
+    dialog --backtitle "$(backtitle)" --title "Custom DTS" \
+      --default-item ${NEXT} --menu "Choose an option" 0 0 0 \
+      % "Custom dts: ${CUSTOMDTS}" \
+      1 "Upload dts file" \
+      2 "Delete dts file" \
+      3 "Edit dts file" \
+      2>${TMP_PATH}/resp
+    [ $? -ne 0 ] && break
+    case "$(cat ${TMP_PATH}/resp)" in
+    %) ;;
+    1)
+      if ! tty 2>/dev/null | grep -q "/dev/pts"; then #if ! tty 2>/dev/null | grep -q "/dev/pts" || [ -z "${SSH_TTY}" ]; then
+        MSG=""
+        MSG+="This feature is only available when accessed via ssh (Requires a terminal that supports ZModem protocol).\n"
+        MSG+="$(printf "Or upload the dts file to %s via DUFS, Will be automatically imported when building." "${USER_UP_PATH}/${MODEL}.dts")"
+        dialog --backtitle "$(backtitle)" --title "Custom DTS" \
+          --msgbox "${MSG}" 0 0
+        return
+      fi
+      dialog --backtitle "$(backtitle)" --title "Custom DTS" \
+        --msgbox "Currently, only dts format files are supported. Please prepare and click to confirm uploading.\n(located in /mnt/p3/users/)" 0 0
+      TMP_UP_PATH="${TMP_PATH}/users"
+      DTC_ERRLOG="/tmp/dtc.log"
+      rm -rf "${TMP_UP_PATH}"
+      mkdir -p "${TMP_UP_PATH}"
+      pushd "${TMP_UP_PATH}"
+      RET=1
+      rz -be
+      for F in $(ls -A 2>/dev/null); do
+        USER_FILE="${TMP_UP_PATH}/${F}"
+        dtc -q -I dts -O dtb "${F}" >"test.dtb" 2>"${DTC_ERRLOG}"
+        RET=$?
+        break
+      done
+      popd
+      if [ ${RET} -ne 0 ] || [ -z "${USER_FILE}" ]; then
+        dialog --backtitle "$(backtitle)" --title "Custom DTS" \
+          --msgbox "Not a valid dts file, please try again!\n\n$(cat "${DTC_ERRLOG}")" 0 0
+      else
+        [ -d "{USER_UP_PATH}" ] || mkdir -p "${USER_UP_PATH}"
+        cp -f "${USER_FILE}" "${USER_UP_PATH}/${MODEL}.dts"
+        dialog --backtitle "$(backtitle)" --title "$(TEXT "Custom DTS")" \
+          --msgbox "A valid dts file, Automatically import at compile time." 0 0
+      fi
+      rm -rf "${DTC_ERRLOG}"
+      writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+      BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+      ;;
+    2)
+      rm -f "${USER_UP_PATH}/${MODEL}.dts"
+      writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+      BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+      ;;
+    3)
+      rm -rf "${TMP_PATH}/model.dts"
+      if [ -f "${USER_UP_PATH}/${MODEL}.dts" ]; then
+        cp -f "${USER_UP_PATH}/${MODEL}.dts" "${TMP_PATH}/model.dts"
+      else
+        ODTB="$(ls ${PART2_PATH}/*.dtb 2>/dev/null | head -1)"
+        if [ -f "${ODTB}" ]; then
+          dtc -q -I dtb -O dts "${ODTB}" >"${TMP_PATH}/model.dts"
+        else
+          dialog --backtitle "$(backtitle)" --title "Custom DTS" \
+            --msgbox "No dts file to edit. Please upload first!" 0 0
+          continue
+        fi
+      fi
+      DTC_ERRLOG="/tmp/dtc.log"
+      while true; do
+        dialog --backtitle "$(backtitle)" --title "Edit with caution" \
+          --editbox "${TMP_PATH}/model.dts" 0 0 2>"${TMP_PATH}/modelEdit.dts"
+        [ $? -ne 0 ] && rm -f "${TMP_PATH}/model.dts" "${TMP_PATH}/modelEdit.dts" && return
+        dtc -q -I dts -O dtb "${TMP_PATH}/modelEdit.dts" >"test.dtb" 2>"${DTC_ERRLOG}"
+        if [ $? -ne 0 ]; then
+          dialog --backtitle "$(backtitle)" --title "Custom DTS" \
+            --msgbox "Not a valid dts file, please try again!\n\n$(cat "${DTC_ERRLOG}")" 0 0
+        else
+          mkdir -p "${USER_UP_PATH}"
+          cp -f "${TMP_PATH}/modelEdit.dts" "${USER_UP_PATH}/${MODEL}.dts"
+          rm -r "${TMP_PATH}/model.dts" "${TMP_PATH}/modelEdit.dts"
+          writeConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
+          BUILDDONE="$(readConfigKey "arc.builddone" "${USER_CONFIG_FILE}")"
+          break
+        fi
+      done
+      ;;
+    esac
+  done
 }

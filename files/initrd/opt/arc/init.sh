@@ -5,10 +5,12 @@ set -e
 
 . ${ARC_PATH}/include/functions.sh
 . ${ARC_PATH}/include/addons.sh
-
-[ -z "${LOADER_DISK}" ] && die "Loader Disk not found!"
+. ${ARC_PATH}/include/compat.sh
+. ${ARC_PATH}/boot.sh
 
 # Get Loader Disk Bus
+[ -z "${LOADER_DISK}" ] && die "Loader Disk not found!"
+checkBootLoader || die "The loader is corrupted, please rewrite it!"
 BUS=$(getBus "${LOADER_DISK}")
 
 # Check if machine has EFI
@@ -36,105 +38,110 @@ fi
 # Config Init
 initConfigKey "addons" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "arc" "{}" "${USER_CONFIG_FILE}"
-initConfigKey "arc.bootipwait" "30" "${USER_CONFIG_FILE}"
 initConfigKey "arc.builddone" "false" "${USER_CONFIG_FILE}"
 initConfigKey "arc.confdone" "false" "${USER_CONFIG_FILE}"
-initConfigKey "arc.custom" "false" "${USER_CONFIG_FILE}"
-initConfigKey "arc.directboot" "false" "${USER_CONFIG_FILE}"
-initConfigKey "arc.dsmlogo" "true" "${USER_CONFIG_FILE}"
-initConfigKey "arc.emmcboot" "false" "${USER_CONFIG_FILE}"
-initConfigKey "arc.governor" "" "${USER_CONFIG_FILE}"
-initConfigKey "arc.hddsort" "false" "${USER_CONFIG_FILE}"
+initConfigKey "arc.dynamic" "false" "${USER_CONFIG_FILE}"
 initConfigKey "arc.ipv6" "false" "${USER_CONFIG_FILE}"
-initConfigKey "arc.kernel" "official" "${USER_CONFIG_FILE}"
-initConfigKey "arc.kernelload" "power" "${USER_CONFIG_FILE}"
-initConfigKey "arc.kernelpanic" "5" "${USER_CONFIG_FILE}"
 initConfigKey "arc.key" "" "${USER_CONFIG_FILE}"
-initConfigKey "arc.macsys" "hardware" "${USER_CONFIG_FILE}"
-initConfigKey "arc.odp" "false" "${USER_CONFIG_FILE}"
+initConfigKey "arc.nic" "" "${USER_CONFIG_FILE}"
 initConfigKey "arc.offline" "false" "${USER_CONFIG_FILE}"
 initConfigKey "arc.patch" "false" "${USER_CONFIG_FILE}"
-initConfigKey "arc.pathash" "" "${USER_CONFIG_FILE}"
-initConfigKey "arc.paturl" "" "${USER_CONFIG_FILE}"
-initConfigKey "arc.sn" "" "${USER_CONFIG_FILE}"
 initConfigKey "arc.version" "${ARC_VERSION}" "${USER_CONFIG_FILE}"
+initConfigKey "bootipwait" "30" "${USER_CONFIG_FILE}"
+initConfigKey "directboot" "false" "${USER_CONFIG_FILE}"
+initConfigKey "dsmlogo" "true" "${USER_CONFIG_FILE}"
+initConfigKey "emmcboot" "false" "${USER_CONFIG_FILE}"
+initConfigKey "governor" "performance" "${USER_CONFIG_FILE}"
+initConfigKey "hddsort" "false" "${USER_CONFIG_FILE}"
+initConfigKey "kernel" "official" "${USER_CONFIG_FILE}"
+initConfigKey "kernelload" "power" "${USER_CONFIG_FILE}"
+initConfigKey "kernelpanic" "5" "${USER_CONFIG_FILE}"
+initConfigKey "odp" "false" "${USER_CONFIG_FILE}"
+initConfigKey "pathash" "" "${USER_CONFIG_FILE}"
+initConfigKey "paturl" "" "${USER_CONFIG_FILE}"
+initConfigKey "sn" "" "${USER_CONFIG_FILE}"
 initConfigKey "cmdline" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "device" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "device.externalcontroller" "false" "${USER_CONFIG_FILE}"
-initConfigKey "gateway" "{}" "${USER_CONFIG_FILE}"
-initConfigKey "ip" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "keymap" "" "${USER_CONFIG_FILE}"
 initConfigKey "layout" "" "${USER_CONFIG_FILE}"
 initConfigKey "lkm" "prod" "${USER_CONFIG_FILE}"
-initConfigKey "mac" "{}" "${USER_CONFIG_FILE}"
+# initConfigKey "modblacklist" "evbug,cdc_ether" "${USER_CONFIG_FILE}"
+initConfigKey "modblacklist" "evbug" "${USER_CONFIG_FILE}"
 initConfigKey "modules" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "model" "" "${USER_CONFIG_FILE}"
 initConfigKey "modelid" "" "${USER_CONFIG_FILE}"
-initConfigKey "netmask" "{}" "${USER_CONFIG_FILE}"
+initConfigKey "network" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "platform" "" "${USER_CONFIG_FILE}"
 initConfigKey "productver" "" "${USER_CONFIG_FILE}"
 initConfigKey "ramdisk-hash" "" "${USER_CONFIG_FILE}"
 initConfigKey "rd-compressed" "false" "${USER_CONFIG_FILE}"
 initConfigKey "satadom" "2" "${USER_CONFIG_FILE}"
-initConfigKey "static" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "synoinfo" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "time" "{}" "${USER_CONFIG_FILE}"
 initConfigKey "zimage-hash" "" "${USER_CONFIG_FILE}"
+if grep -q "automated_arc" /proc/cmdline; then
+  writeConfigKey "automated" "true" "${USER_CONFIG_FILE}"
+else
+  writeConfigKey "automated" "false" "${USER_CONFIG_FILE}"
+fi
+[ -f "${PART1_PATH}/ARC-BRANCH" ] && initConfigKey "arc.branch" "next" "${USER_CONFIG_FILE}" || initConfigKey "arc.branch" "" "${USER_CONFIG_FILE}"
+[ -f "${PART3_PATH}/automated" ] && rm -f "${PART3_PATH}/automated" >/dev/null 2>&1 || true
+# Check for compatibility
+compatboot
 
 # Init Network
-ETHX=$(ls /sys/class/net/ 2>/dev/null | grep eth) # real network cards list
+ETHX="$(ls /sys/class/net/ 2>/dev/null | grep eth)"
 if arrayExistItem "sortnetif:" $(readConfigMap "addons" "${USER_CONFIG_FILE}"); then
   _sort_netif "$(readConfigKey "addons.sortnetif" "${USER_CONFIG_FILE}")"
 fi
-MACSYS="$(readConfigKey "arc.macsys" "${USER_CONFIG_FILE}")"
-# Write Mac to config
-NIC=0
+[ ! -f /var/run/dhcpcd/pid ] && /etc/init.d/S41dhcpcd restart >/dev/null 2>&1 || true
+# Read/Write IP/Mac config
 for ETH in ${ETHX}; do
-  MACR=$(cat /sys/class/net/${ETH}/address | sed 's/://g')
-  if [ -z "${MACR}" ]; then
-    MACR="9009d0123456"
-  fi
-  initConfigKey "mac.${ETH}" "${MACR}" "${USER_CONFIG_FILE}"
-  if [ "${MACSYS}" == "custom" ]; then
-    MACA="$(readConfigKey "mac.${ETH}" "${USER_CONFIG_FILE}")"
-    if [ -n "${MACA}" ] && [ "${MACA}" != "${MACR}" ]; then
-      MAC="${MACA:0:2}:${MACA:2:2}:${MACA:4:2}:${MACA:6:2}:${MACA:8:2}:${MACA:10:2}"
-      echo "Setting ${ETH} MAC to ${MAC}"
-      ip link set dev ${ETH} address ${MAC} >/dev/null 2>&1 || true
-      STATICIP="$(readConfigKey "static.${ETH}" "${USER_CONFIG_FILE}")"
-      [ "${STATICIP}" == "false" ] && /etc/init.d/S41dhcpcd restart >/dev/null 2>&1 || true
-      sleep 2
+  MACR="$(cat /sys/class/net/${ETH}/address 2>/dev/null | sed 's/://g' | tr '[:upper:]' '[:lower:]')"
+  IPR="$(readConfigKey "network.${MACR}" "${USER_CONFIG_FILE}")"
+  if [ -n "${IPR}" ]; then
+    IFS='/' read -r -a IPRA <<<"$IPR"
+    ip addr flush dev $ETH
+    ip addr add ${IPRA[0]}/${IPRA[1]:-"255.255.255.0"} dev $ETH
+    if [ -n "${IPRA[2]}" ]; then
+      ip route add default via ${IPRA[2]} dev $ETH
     fi
+    if [ -n "${IPRA[3]:-${IPRA[2]}}" ]; then
+      sed -i "/nameserver ${IPRA[3]:-${IPRA[2]}}/d" /etc/resolv.conf
+      echo "nameserver ${IPRA[3]:-${IPRA[2]}}" >>/etc/resolv.conf
+    fi
+    sleep 1
   fi
-  NIC=$((${NIC} + 1))
+  [ "${ETH::3}" = "eth" ] && ethtool -s ${ETH} wol g 2>/dev/null || true
+  [ "${ETH::3}" = "eth" ] && ethtool -K ${ETH} rxhash off 2>/dev/null || true
+  initConfigKey "${ETH}" "${MACR}" "${USER_CONFIG_FILE}"
 done
-ETHN=$(ls /sys/class/net/ 2>/dev/null | grep eth | wc -l)
-[ ${NIC} -ne ${ETHN} ] && echo -e "\033[1;31mWarning: NIC mismatch (NICs: ${NIC} | Real: ${ETHN})\033[0m"
-# Write NIC Amount to config
-writeConfigKey "device.nic" "${NIC}" "${USER_CONFIG_FILE}"
+ETHN="$(echo ${ETHX} | wc -w)"
+writeConfigKey "device.nic" "${ETHN}" "${USER_CONFIG_FILE}"
 # No network devices
 echo
-[ ${NIC} -le 0 ] && die "No NIC found! - Loader does not work without Network connection."
+[ ${ETHN} -le 0 ] && die "No NIC found! - Loader does not work without Network connection."
 
 # Get the VID/PID if we are in USB
 VID="0x46f4"
 PID="0x0001"
 
-BUSLIST="usb sata scsi nvme mmc"
+BUSLIST="usb sata sas scsi nvme mmc ide virtio vmbus xen"
 if [ "${BUS}" == "usb" ]; then
   VID="0x$(udevadm info --query property --name "${LOADER_DISK}" | grep ID_VENDOR_ID | cut -d= -f2)"
   PID="0x$(udevadm info --query property --name "${LOADER_DISK}" | grep ID_MODEL_ID | cut -d= -f2)"
 elif ! echo "${BUSLIST}" | grep -wq "${BUS}"; then
-  die "Loader disk is not USB or SATA/SCSI/NVME/eMMC DoM"
+  die "$(printf "The boot disk does not support the current %s, only %s are supported." "${BUS}" "${BUSLIST// /\/}")"
 fi
+
+# Inform user and check bus
+echo -e "Loader Disk: \033[1;34m${LOADER_DISK}\033[0m"
+echo -e "Loader Disk Type: \033[1;34m${BUS}\033[0m"
 
 # Save variables to user config file
 writeConfigKey "vid" ${VID} "${USER_CONFIG_FILE}"
 writeConfigKey "pid" ${PID} "${USER_CONFIG_FILE}"
-
-# Inform user
-echo -e "Loader Disk: \033[1;34m${LOADER_DISK}\033[0m"
-echo -e "Loader Disk Type: \033[1;34m${BUS}\033[0m"
 
 # Load keymap name
 LAYOUT="$(readConfigKey "layout" "${USER_CONFIG_FILE}")"
@@ -159,59 +166,45 @@ elif grep -q "update_arc" /proc/cmdline; then
   echo -e "\033[1;34mStarting Update Mode...\033[0m"
 elif [ "${BUILDDONE}" == "true" ]; then
   echo -e "\033[1;34mStarting DSM Mode...\033[0m"
-  boot.sh && exit 0
+  bootDSM
+  exit 0
 else
   echo -e "\033[1;34mStarting Config Mode...\033[0m"
 fi
 echo
 
-BOOTIPWAIT="$(readConfigKey "arc.bootipwait" "${USER_CONFIG_FILE}")"
+BOOTIPWAIT="$(readConfigKey "bootipwait" "${USER_CONFIG_FILE}")"
 [ -z "${BOOTIPWAIT}" ] && BOOTIPWAIT=30
-echo -e "\033[1;34mDetected ${NIC} NIC.\033[0m \033[1;37mWaiting for Connection:\033[0m"
+echo -e "\033[1;34mDetected ${ETHN} NIC.\033[0m \033[1;37mWaiting for Connection:\033[0m"
+sleep 3
 for ETH in ${ETHX}; do
-  IP=""
-  STATICIP="$(readConfigKey "static.${ETH}" "${USER_CONFIG_FILE}")"
-  ARCNIC="$(readConfigKey "arc.nic" "${USER_CONFIG_FILE}")"
-  DRIVER=$(ls -ld /sys/class/net/${ETH}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')
   COUNT=0
+  DRIVER=$(ls -ld /sys/class/net/${ETH}/device/driver 2>/dev/null | awk -F '/' '{print $NF}')
   while true; do
-    ARCIP="$(readConfigKey "ip.${ETH}" "${USER_CONFIG_FILE}")"
-    if [ "${STATICIP}" == "true" ] && [ -n "${ARCIP}" ]; then
-      /etc/init.d/S41dhcpcd stop >/dev/null 2>&1 || true
-      ip addr flush dev ${ETH} 2>/dev/null || true
-      NETMASK="$(readConfigKey "netmask.${ETH}" "${USER_CONFIG_FILE}")"
-      GATEWAY="$(readConfigKey "gateway.${ETH}" "${USER_CONFIG_FILE}")"
-      NAMESERVER="$(readConfigKey "nameserver.${ETH}" "${USER_CONFIG_FILE}")"
-      IP=${ARCIP}
-      #NETMASK=$(convert_netmask "${NETMASK}")
-      ip addr add ${ARCIP}/${NETMASK} dev ${ETH} 2>/dev/null || true
-      ip route add default via ${GATEWAY} dev ${ETH} 2>/dev/null || true
-      echo "nameserver ${NAMESERVER}" >>/etc/resolv.conf.head 2>/dev/null || true
-      /etc/init.d/S40network restart 2>/dev/null || true
-      MSG="STATIC"
-    else
-      IP=$(getIP ${ETH})
-      writeConfigKey "static.${ETH}" "false" "${USER_CONFIG_FILE}"
-      MSG="DHCP"
-    fi
     if ethtool ${ETH} 2>/dev/null | grep 'Link detected' | grep -q 'no'; then
       echo -e "\r\033[1;37m${DRIVER}:\033[0m NOT CONNECTED"
       break
-    elif [ -n "${IP}" ]; then
+    fi
+    COUNT=$((${COUNT} + 1))
+    IP="$(getIP ${ETH})"
+    if [ -n "${IP}" ]; then
       SPEED=$(ethtool ${ETH} 2>/dev/null | grep "Speed:" | awk '{print $2}')
-      writeConfigKey "ip.${ETH}" "${IP}" "${USER_CONFIG_FILE}"
       if [[ "${IP}" =~ ^169\.254\..* ]]; then
-        echo -e "\r\033[1;37m${DRIVER} (${SPEED} | ${MSG}):\033[0m LINK LOCAL (No DHCP server found.)"
+        echo -e "\r\033[1;37m${DRIVER} (${SPEED}):\033[0m LINK LOCAL (No DHCP server found.)"
       else
-        echo -e "\r\033[1;37m${DRIVER} (${SPEED} | ${MSG}):\033[0m Access \033[1;34mhttp://${IP}:7681\033[0m to connect to Arc via web."
+        echo -e "\r\033[1;37m${DRIVER} (${SPEED}):\033[0m Access \033[1;34mhttp://${IP}:7681\033[0m to connect to Arc via web interface."
       fi
       break
-    elif [ ${COUNT} -ge ${BOOTIPWAIT} ]; then
-      echo -e echo -e "\r\033[1;37m${DRIVER}:\033[0m TIMEOUT"
+    fi
+    if ! ip link show ${ETH} 2>/dev/null | grep -q 'UP'; then
+      echo -e "\r\033[1;37m${DRIVER}:\033[0m DOWN"
       break
     fi
-    sleep 5
-    COUNT=$((${COUNT} + 4))
+    if [ ${COUNT} -ge ${BOOTIPWAIT} ]; then
+      echo -e "\r\033[1;37m${DRIVER}:\033[0m TIMEOUT"
+      break
+    fi
+    sleep 1
   done
 done
 
