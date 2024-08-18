@@ -12,7 +12,6 @@
 . ${ARC_PATH}/include/network.sh
 . ${ARC_PATH}/include/update.sh
 . ${ARC_PATH}/arc-functions.sh
-. ${ARC_PATH}/boot.sh
 
 # Check for System
 systemCheck
@@ -624,6 +623,12 @@ function arcSummary() {
 ###############################################################################
 # Building Loader Online
 function make() {
+  # Check for Arc Patch
+  ARCCONF="$(readConfigKey "${MODEL}.serial" "${S_FILE}" 2>/dev/null)"
+  if [ -z "${ARCCONF}" ]; then
+    deleteConfigKey "addons.amepatch" "${USER_CONFIG_FILE}"
+    deleteConfigKey "addons.sspatch" "${USER_CONFIG_FILE}"
+  fi
   # Read Model Config
   MODEL="$(readConfigKey "model" "${USER_CONFIG_FILE}")"
   MODELID="$(readConfigKey "modelid" "${USER_CONFIG_FILE}")"
@@ -693,9 +698,10 @@ function make() {
     if [ "${AUTOMATED}" == "false" ] && [ "${VALID}" == "false" ]; then
         MSG="Failed to get PAT Data.\n"
         MSG+="Please manually fill in the URL and Hash of PAT.\n"
-        MSG+="You will find these Data at: https://download.synology.com"
+        MSG+="You will find these Data at:\n"
+        MSG+="https://auxxxilium.tech/wiki/arc-loader-arc-loader/url-hash-liste"
         dialog --backtitle "$(backtitle)" --colors --title "Arc Build" --default-button "OK" \
-          --form "${MSG}" 10 110 2 "URL" 1 1 "${PAT_URL}" 1 7 100 0 "HASH" 2 1 "${PAT_HASH}" 2 7 100 0 \
+          --form "${MSG}" 10 110 2 "URL" 1 1 "${PAT_URL}" 1 7 100 0 "HASH" 2 1 "${PAT_HASH}" 2 8 100 0 \
           2>"${TMP_PATH}/resp"
         RET=$?
         [ ${RET} -eq 0 ]             # ok-button
@@ -888,7 +894,7 @@ function boot() {
   dialog --backtitle "$(backtitle)" --title "Arc Boot" \
     --infobox "Booting DSM...\nPlease stay patient!" 4 25
   sleep 2
-  bootDSM
+  . ${ARC_PATH}/boot.sh
   exit 0
 }
 
